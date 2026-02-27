@@ -22,7 +22,9 @@ VGM/S98/DRO/GYM 형식의 게임 음악 파일을 WAV로 변환하는 CLI 도구
 - CMake 3.12+
 - C++17 컴파일러
 - zlib (libvgm 의존성, macOS 기본 포함)
-- [libzip](https://libzip.org/) — ZIP 지원에 필요
+- [libzip](https://libzip.org/) — ZIP 지원 시 필요 (선택)
+
+libzip 없이도 빌드 및 실행 가능합니다. ZIP 파일 입력 시에만 에러가 출력됩니다.
 
 macOS (Homebrew):
 ```bash
