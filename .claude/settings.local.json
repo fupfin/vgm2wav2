@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git submodule:*)",
+      "Bash(cmake:*)",
+      "Bash(./build/bin/vgm2wav:*)",
+      "Bash(/Users/honux/Hobby/vgm2wav2/build/libvgm/bin/vgm2wav:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(brew list:*)",
+      "Bash(./build/vgm2wav2:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}
