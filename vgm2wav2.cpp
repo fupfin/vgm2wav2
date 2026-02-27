@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#ifdef HAVE_LIBZIP
 #include <zip.h>
+#endif
 
 #include "player/playerbase.hpp"
 #include "player/vgmplayer.hpp"
@@ -252,6 +254,7 @@ static int process_directory(const std::string &in_dir, const std::string &out_d
 }
 
 static int process_zip(const std::string &zip_path, const std::string &out_dir) {
+#ifdef HAVE_LIBZIP
     int err = 0;
     zip_t *za = zip_open(zip_path.c_str(), ZIP_RDONLY, &err);
     if(!za) {
@@ -294,6 +297,11 @@ static int process_zip(const std::string &zip_path, const std::string &out_dir) 
     }
     zip_close(za);
     return errors;
+#else
+    (void)zip_path; (void)out_dir;
+    fprintf(stderr, "ZIP support not available (build with libzip)\n");
+    return 1;
+#endif
 }
 
 /* ---- main ---- */
