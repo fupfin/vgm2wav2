@@ -37,3 +37,5 @@ if(LIBGME_FOUND)
 else()
     message(STATUS "libgme not found: GME engine disabled (brew install game-music-emu)")
 endif()
+
+install(TARGETS vgm2wav2 DESTINATION bin)

@@ -43,6 +43,8 @@ static unsigned int  sample_rate   = 44100;
 static unsigned int  bit_depth     = 16;
 static unsigned int  loops         = 2;
 static std::string   output_format = "wav";  // wav, mp3, aac, flac, ...
+static bool          dry_run       = false;
+static bool          skip_existing = false;
 
 enum class Engine { Auto, LibVGM, GME };
 static Engine engine = Engine::Auto;
@@ -320,6 +322,15 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
 
 static int render_gme_track(Music_Emu *emu, int track_idx,
                              const char *in_name, const char *out_path) {
+    if(skip_existing && fs::exists(out_path)) {
+        fprintf(stderr, "Skip: %s (exists)\n", out_path);
+        return 0;
+    }
+    if(dry_run) {
+        fprintf(stderr, "Would convert: %s [track %d] -> %s\n",
+            in_name, track_idx + 1, out_path);
+        return 0;
+    }
     gme_info_t *info = NULL;
     gme_track_info(emu, &info, track_idx);
 
@@ -444,6 +455,14 @@ static int process_file(const std::string &in_path, const std::string &out_path)
     if(should_use_gme(in_path))
         return process_gme_file(in_path, out_path);
 #endif
+    if(skip_existing && fs::exists(out_path)) {
+        fprintf(stderr, "Skip: %s (exists)\n", out_path.c_str());
+        return 0;
+    }
+    if(dry_run) {
+        fprintf(stderr, "Would convert: %s -> %s\n", in_path.c_str(), out_path.c_str());
+        return 0;
+    }
     DATA_LOADER *loader = FileLoader_Init(in_path.c_str());
     if(!loader) { fprintf(stderr, "Failed to open: %s\n", in_path.c_str()); return 1; }
     int ret = render_to_file(loader, in_path.c_str(), out_path.c_str());
@@ -508,6 +527,14 @@ static int process_zip(const std::string &zip_path, const std::string &out_dir) 
             continue;
         }
 #endif
+        if(skip_existing && fs::exists(out)) {
+            fprintf(stderr, "Skip: %s (exists)\n", out.string().c_str());
+            continue;
+        }
+        if(dry_run) {
+            fprintf(stderr, "Would convert: %s -> %s\n", st.name, out.string().c_str());
+            continue;
+        }
         DATA_LOADER *loader = MemoryLoader_Init(buf.data(), (UINT32)buf.size());
         if(!loader) { errors++; continue; }
 
@@ -564,6 +591,8 @@ int main(int argc, const char *argv[]) {
                 else                            engine = Engine::Auto;
             }
         }
+        else if(str_equals(arg, "--dryrun"))  { dry_run = true; }
+        else if(str_equals(arg, "--skip"))    { skip_existing = true; }
         else break;
 
         argv++; argc--;
@@ -591,7 +620,9 @@ int main(int argc, const char *argv[]) {
             "  --samplerate n  (default: 44100)\n"
             "  --bps n         16/24/32 (default: 16; ignored for GME engine)\n"
             "  --fade x        fade-out seconds (default: 8.0)\n"
-            "  --loops n       loop count (default: 2)\n",
+            "  --loops n       loop count (default: 2)\n"
+            "  --skip          skip if output file already exists (default: overwrite)\n"
+            "  --dryrun        print what would be done without converting\n",
             self);
         return 1;
     }
