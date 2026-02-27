@@ -1,5 +1,6 @@
-/* vgm2wav2 - batch VGM/S98/DRO/GYM to WAV converter
+/* vgm2wav2 - batch VGM/S98/DRO/GYM/NSF/SPC/... to audio converter
  * Supports: single file, directory (recursive), zip archive
+ * Engines: libvgm (VGM/S98/DRO/GYM), libgme (NSF/SPC/GBS/AY/HES/KSS/SAP/NSFE)
  * Based on libvgm's vgm2wav.cpp
  */
 
@@ -11,6 +12,9 @@
 #include <filesystem>
 #ifdef HAVE_LIBZIP
 #include <zip.h>
+#endif
+#ifdef HAVE_GME
+#include <gme/gme.h>
 #endif
 
 #include "player/playerbase.hpp"
@@ -39,6 +43,9 @@ static unsigned int  sample_rate   = 44100;
 static unsigned int  bit_depth     = 16;
 static unsigned int  loops         = 2;
 static std::string   output_format = "wav";  // wav, mp3, aac, flac, ...
+
+enum class Engine { Auto, LibVGM, GME };
+static Engine engine = Engine::Auto;
 
 static const char *extensible_guid_trailer =
     "\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71";
@@ -81,8 +88,8 @@ static inline void repack_int32le(UINT8 *d, const UINT8 *src) {
 #endif
 }
 
-static int write_wav_header(FILE *f, unsigned int totalFrames) {
-    unsigned int dataSize = totalFrames * (bit_depth / 8) * 2;
+static int write_wav_header(FILE *f, unsigned int totalFrames, unsigned int bps) {
+    unsigned int dataSize = totalFrames * (bps / 8) * 2;
     UINT8 tmp[4];
     if(fwrite("RIFF",1,4,f) != 4) return 0;
     pack_uint32le(tmp, 4 + (8 + dataSize) + (8 + 40));
@@ -97,15 +104,15 @@ static int write_wav_header(FILE *f, unsigned int totalFrames) {
     if(fwrite(tmp,1,2,f) != 2) return 0;
     pack_uint32le(tmp,sample_rate);
     if(fwrite(tmp,1,4,f) != 4) return 0;
-    pack_uint32le(tmp,sample_rate * 2 * (bit_depth / 8));
+    pack_uint32le(tmp,sample_rate * 2 * (bps / 8));
     if(fwrite(tmp,1,4,f) != 4) return 0;
-    pack_uint16le(tmp,2 * (bit_depth / 8));
+    pack_uint16le(tmp,2 * (bps / 8));
     if(fwrite(tmp,1,2,f) != 2) return 0;
-    pack_uint16le(tmp,bit_depth);
+    pack_uint16le(tmp,bps);
     if(fwrite(tmp,1,2,f) != 2) return 0;
     pack_uint16le(tmp,22);
     if(fwrite(tmp,1,2,f) != 2) return 0;
-    pack_uint16le(tmp,bit_depth);
+    pack_uint16le(tmp,bps);
     if(fwrite(tmp,1,2,f) != 2) return 0;
     pack_uint32le(tmp,3);
     if(fwrite(tmp,1,4,f) != 4) return 0;
@@ -133,14 +140,12 @@ static void frames_to_little_endian(UINT8 *data, unsigned int frame_count) {
 
 /* ---- ffmpeg helpers ---- */
 
-// 배치 모드에서 출력 파일 확장자 결정
 static std::string format_extension() {
     if(output_format == "wav")  return ".wav";
     if(output_format == "aac")  return ".m4a";
-    return "." + output_format;  // mp3 → .mp3, flac → .flac, ...
+    return "." + output_format;
 }
 
-// popen에 넘길 명령어에서 경로를 안전하게 쿼팅
 static std::string shell_quote(const std::string &s) {
     std::string r = "'";
     for(char c : s) {
@@ -150,21 +155,59 @@ static std::string shell_quote(const std::string &s) {
     return r + "'";
 }
 
-// bit_depth → ffmpeg PCM 포맷 문자열
 static const char *ffmpeg_pcm_fmt() {
     if(bit_depth == 24) return "s24le";
     if(bit_depth == 32) return "s32le";
     return "s16le";
 }
 
-// ffmpeg 사용 가능 여부 확인
 static bool check_ffmpeg() {
     FILE *p = popen("ffmpeg -version > /dev/null 2>&1", "r");
     if(!p) return false;
     return pclose(p) == 0;
 }
 
-/* ---- core render function ---- */
+/* ---- input type helpers ---- */
+
+static bool is_vgm_ext(const fs::path &p) {
+    std::string ext = p.extension().string();
+    for(auto &c : ext) c = (char)tolower((unsigned char)c);
+    return ext == ".vgm" || ext == ".vgz" || ext == ".s98"
+        || ext == ".dro" || ext == ".gym";
+}
+
+static bool is_gme_only_ext(const fs::path &p) {
+    std::string ext = p.extension().string();
+    for(auto &c : ext) c = (char)tolower((unsigned char)c);
+    return ext == ".ay"  || ext == ".gbs"  || ext == ".hes" || ext == ".kss"
+        || ext == ".nsf" || ext == ".nsfe" || ext == ".sap" || ext == ".spc";
+}
+
+static bool is_music_ext(const fs::path &p) {
+    return is_vgm_ext(p) || is_gme_only_ext(p);
+}
+
+static bool should_use_gme(const std::string &path) {
+    switch(engine) {
+        case Engine::LibVGM: return false;
+        case Engine::GME:    return true;
+        case Engine::Auto:   return is_gme_only_ext(fs::path(path));
+    }
+    return false;
+}
+
+// For multi-track output: if total==1 return out_path unchanged,
+// otherwise insert _NN before the extension (1-indexed).
+static std::string gme_track_path(const std::string &out_path, int track, int total) {
+    if(total == 1) return out_path;
+    fs::path p(out_path);
+    char suffix[8];
+    snprintf(suffix, sizeof(suffix), "_%02d", track + 1);
+    std::string name = p.stem().string() + suffix + p.extension().string();
+    return (p.parent_path() / name).string();
+}
+
+/* ---- libvgm core render ---- */
 
 static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *out_path) {
     PlayerA player;
@@ -243,7 +286,7 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
         plrEngine->Sample2Second(totalFrames));
 
     if(!use_pipe)
-        write_wav_header(f, totalFrames);
+        write_wav_header(f, totalFrames, bit_depth);
 
     double complete = 0.0;
     double inc = (totalFrames > 0) ? (double)BUFFER_LEN / totalFrames : 1.0;
@@ -271,16 +314,136 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
     return 0;
 }
 
-/* ---- input type helpers ---- */
+/* ---- GME render functions ---- */
 
-static bool is_vgm_ext(const fs::path &p) {
-    std::string ext = p.extension().string();
-    for(auto &c : ext) c = (char)tolower((unsigned char)c);
-    return ext == ".vgm" || ext == ".vgz" || ext == ".s98"
-        || ext == ".dro" || ext == ".gym";
+#ifdef HAVE_GME
+
+static int render_gme_track(Music_Emu *emu, int track_idx,
+                             const char *in_name, const char *out_path) {
+    gme_info_t *info = NULL;
+    gme_track_info(emu, &info, track_idx);
+
+    long play_ms;
+    if(info && info->length > 0)
+        play_ms = info->length;
+    else if(info && info->loop_length > 0)
+        play_ms = info->intro_length + info->loop_length * (long)loops;
+    else
+        play_ms = 150000;  // 2.5 min default
+
+    long total_ms = play_ms + (long)(fade_len * 1000);
+    if(info) gme_free_info(info);
+
+    gme_set_fade(emu, play_ms);
+
+    gme_err_t err = gme_start_track(emu, track_idx);
+    if(err) {
+        fprintf(stderr, "GME start_track error (%s track %d): %s\n",
+            in_name, track_idx + 1, err);
+        return 1;
+    }
+
+    unsigned int total_frames = (unsigned int)((long long)total_ms * sample_rate / 1000);
+
+    bool use_pipe = (output_format != "wav");
+    FILE *f;
+    if(use_pipe) {
+        std::string cmd = std::string("ffmpeg -y")
+            + " -f s16le"
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2"
+            + " -i pipe:0"
+            + " " + shell_quote(out_path)
+            + " 2>/dev/null";
+        f = popen(cmd.c_str(), "w");
+    } else {
+        f = fopen(out_path, "wb");
+    }
+    if(!f) {
+        fprintf(stderr, "Cannot open output: %s\n", out_path);
+        return 1;
+    }
+
+    fprintf(stderr, "%s [track %d] -> %s  [%.1fs]\n",
+        in_name, track_idx + 1, out_path, total_ms / 1000.0);
+
+    if(!use_pipe)
+        write_wav_header(f, total_frames, 16);
+
+    std::vector<short> buf(BUFFER_LEN * 2);
+    unsigned int frames_left = total_frames;
+    double complete = 0.0;
+    double inc = (frames_left > 0) ? (double)BUFFER_LEN / frames_left : 1.0;
+    fprintf(stderr, "[");
+    fflush(stderr);
+
+    while(frames_left > 0 && !gme_track_ended(emu)) {
+        unsigned int cur = (BUFFER_LEN < frames_left) ? BUFFER_LEN : frames_left;
+        gme_err_t play_err = gme_play(emu, (int)(cur * 2), buf.data());
+        if(play_err) break;
+        fwrite(buf.data(), sizeof(short), cur * 2, f);
+        frames_left -= cur;
+        complete += inc;
+        if(complete >= 0.10) { complete -= 0.10; fprintf(stderr, "-"); fflush(stderr); }
+    }
+    fprintf(stderr, "]\n");
+
+    if(use_pipe) pclose(f);
+    else fclose(f);
+    return 0;
 }
 
+static int process_gme_file(const std::string &in_path, const std::string &out_path) {
+    Music_Emu *emu = NULL;
+    gme_err_t err = gme_open_file(in_path.c_str(), &emu, (int)sample_rate);
+    if(err) {
+        fprintf(stderr, "GME error (%s): %s\n", in_path.c_str(), err);
+        return 1;
+    }
+
+    int track_count = gme_track_count(emu);
+    int errors = 0;
+    for(int t = 0; t < track_count; t++) {
+        std::string tpath = gme_track_path(out_path, t, track_count);
+        // ensure parent directory exists
+        fs::create_directories(fs::path(tpath).parent_path());
+        errors += render_gme_track(emu, t, in_path.c_str(), tpath.c_str());
+    }
+
+    gme_delete(emu);
+    return errors;
+}
+
+static int process_gme_data(const void *data, long size,
+                             const char *in_name, const std::string &out_path) {
+    Music_Emu *emu = NULL;
+    gme_err_t err = gme_open_data(data, size, &emu, (int)sample_rate);
+    if(err) {
+        fprintf(stderr, "GME error (%s): %s\n", in_name, err);
+        return 1;
+    }
+
+    int track_count = gme_track_count(emu);
+    int errors = 0;
+    for(int t = 0; t < track_count; t++) {
+        std::string tpath = gme_track_path(out_path, t, track_count);
+        fs::create_directories(fs::path(tpath).parent_path());
+        errors += render_gme_track(emu, t, in_name, tpath.c_str());
+    }
+
+    gme_delete(emu);
+    return errors;
+}
+
+#endif  // HAVE_GME
+
+/* ---- file/directory/zip processors ---- */
+
 static int process_file(const std::string &in_path, const std::string &out_path) {
+#ifdef HAVE_GME
+    if(should_use_gme(in_path))
+        return process_gme_file(in_path, out_path);
+#endif
     DATA_LOADER *loader = FileLoader_Init(in_path.c_str());
     if(!loader) { fprintf(stderr, "Failed to open: %s\n", in_path.c_str()); return 1; }
     int ret = render_to_file(loader, in_path.c_str(), out_path.c_str());
@@ -292,7 +455,7 @@ static int process_directory(const std::string &in_dir, const std::string &out_d
     fs::create_directories(out_dir);
     int errors = 0;
     for(auto &entry : fs::recursive_directory_iterator(in_dir)) {
-        if(!entry.is_regular_file() || !is_vgm_ext(entry.path())) continue;
+        if(!entry.is_regular_file() || !is_music_ext(entry.path())) continue;
         fs::path rel     = fs::relative(entry.path(), in_dir);
         fs::path out     = fs::path(out_dir) / rel;
         out.replace_extension(format_extension());
@@ -320,7 +483,7 @@ static int process_zip(const std::string &zip_path, const std::string &out_dir) 
         if(!(st.valid & ZIP_STAT_NAME) || !(st.valid & ZIP_STAT_SIZE)) continue;
 
         fs::path entry_path(st.name);
-        if(!is_vgm_ext(entry_path)) continue;
+        if(!is_music_ext(entry_path)) continue;
 
         zip_file_t *zf = zip_fopen_index(za, i, 0);
         if(!zf) { errors++; continue; }
@@ -334,12 +497,19 @@ static int process_zip(const std::string &zip_path, const std::string &out_dir) 
         }
         zip_fclose(zf);
 
-        DATA_LOADER *loader = MemoryLoader_Init(buf.data(), (UINT32)buf.size());
-        if(!loader) { errors++; continue; }
-
         fs::path out = fs::path(out_dir) / entry_path;
         out.replace_extension(format_extension());
         fs::create_directories(out.parent_path());
+
+#ifdef HAVE_GME
+        if(should_use_gme(st.name)) {
+            errors += process_gme_data(buf.data(), (long)buf.size(),
+                                       st.name, out.string());
+            continue;
+        }
+#endif
+        DATA_LOADER *loader = MemoryLoader_Init(buf.data(), (UINT32)buf.size());
+        if(!loader) { errors++; continue; }
 
         errors += render_to_file(loader, st.name, out.string().c_str());
         DataLoader_Deinit(loader);
@@ -386,6 +556,14 @@ int main(int argc, const char *argv[]) {
         else if(str_istarts(arg, "--bps"))   { val = next_val(); if(val) bit_depth    = scan_uint(val); }
         else if(str_istarts(arg, "--fade"))  { val = next_val(); if(val) fade_len     = strtod(val, NULL); }
         else if(str_istarts(arg, "--format")) { val = next_val(); if(val) output_format = val; }
+        else if(str_istarts(arg, "--engine")) {
+            val = next_val();
+            if(val) {
+                if(str_equals(val, "libvgm"))  engine = Engine::LibVGM;
+                else if(str_equals(val, "gme")) engine = Engine::GME;
+                else                            engine = Engine::Auto;
+            }
+        }
         else break;
 
         argv++; argc--;
@@ -398,12 +576,20 @@ int main(int argc, const char *argv[]) {
     if(argc < 2) {
         fprintf(stderr,
             "Usage: %s [options] <input> <output>\n"
-            "  input   : VGM/VGZ/S98/DRO/GYM file, directory, or .zip archive\n"
+            "  input   : audio file, directory, or .zip archive\n"
             "  output  : audio file (single input) or directory (folder/zip input)\n"
+            "\n"
+            "Supported formats:\n"
+            "  libvgm  : VGM, VGZ, S98, DRO, GYM\n"
+#ifdef HAVE_GME
+            "  GME     : AY, GBS, HES, KSS, NSF, NSFE, SAP, SPC\n"
+#endif
+            "\n"
             "Options:\n"
             "  --format fmt    output format: wav, mp3, aac, flac, ... (default: wav)\n"
+            "  --engine e      engine: auto, libvgm, gme (default: auto)\n"
             "  --samplerate n  (default: 44100)\n"
-            "  --bps n         16/24/32 (default: 16)\n"
+            "  --bps n         16/24/32 (default: 16; ignored for GME engine)\n"
             "  --fade x        fade-out seconds (default: 8.0)\n"
             "  --loops n       loop count (default: 2)\n",
             self);
