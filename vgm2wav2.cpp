@@ -34,10 +34,11 @@ namespace fs = std::filesystem;
 
 #define BUFFER_LEN 2048
 
-static double        fade_len    = 8.0;
-static unsigned int  sample_rate = 44100;
-static unsigned int  bit_depth   = 16;
-static unsigned int  loops       = 2;
+static double        fade_len      = 8.0;
+static unsigned int  sample_rate   = 44100;
+static unsigned int  bit_depth     = 16;
+static unsigned int  loops         = 2;
+static std::string   output_format = "wav";  // wav, mp3, aac, flac, ...
 
 static const char *extensible_guid_trailer =
     "\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71";
@@ -130,9 +131,42 @@ static void frames_to_little_endian(UINT8 *data, unsigned int frame_count) {
     }
 }
 
+/* ---- ffmpeg helpers ---- */
+
+// 배치 모드에서 출력 파일 확장자 결정
+static std::string format_extension() {
+    if(output_format == "wav")  return ".wav";
+    if(output_format == "aac")  return ".m4a";
+    return "." + output_format;  // mp3 → .mp3, flac → .flac, ...
+}
+
+// popen에 넘길 명령어에서 경로를 안전하게 쿼팅
+static std::string shell_quote(const std::string &s) {
+    std::string r = "'";
+    for(char c : s) {
+        if(c == '\'') r += "'\\''";
+        else r += c;
+    }
+    return r + "'";
+}
+
+// bit_depth → ffmpeg PCM 포맷 문자열
+static const char *ffmpeg_pcm_fmt() {
+    if(bit_depth == 24) return "s24le";
+    if(bit_depth == 32) return "s32le";
+    return "s16le";
+}
+
+// ffmpeg 사용 가능 여부 확인
+static bool check_ffmpeg() {
+    FILE *p = popen("ffmpeg -version > /dev/null 2>&1", "r");
+    if(!p) return false;
+    return pclose(p) == 0;
+}
+
 /* ---- core render function ---- */
 
-static int render_to_wav(DATA_LOADER *loader, const char *in_name, const char *out_path) {
+static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *out_path) {
     PlayerA player;
 
     UINT8 *packed = (UINT8 *)malloc(sizeof(INT32) * 2 * BUFFER_LEN);
@@ -178,7 +212,20 @@ static int render_to_wav(DATA_LOADER *loader, const char *in_name, const char *o
         player.SetLoopCount(vgmplay->GetModifiedLoopCount(loops));
     }
 
-    FILE *f = fopen(out_path, "wb");
+    bool use_pipe = (output_format != "wav");
+    FILE *f;
+    if(use_pipe) {
+        std::string cmd = std::string("ffmpeg -y")
+            + " -f "  + ffmpeg_pcm_fmt()
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2"
+            + " -i pipe:0"
+            + " " + shell_quote(out_path)
+            + " 2>/dev/null";
+        f = popen(cmd.c_str(), "w");
+    } else {
+        f = fopen(out_path, "wb");
+    }
     if(!f) {
         fprintf(stderr, "Cannot open output: %s\n", out_path);
         free(packed);
@@ -195,7 +242,8 @@ static int render_to_wav(DATA_LOADER *loader, const char *in_name, const char *o
         in_name, out_path,
         plrEngine->Sample2Second(totalFrames));
 
-    write_wav_header(f, totalFrames);
+    if(!use_pipe)
+        write_wav_header(f, totalFrames);
 
     double complete = 0.0;
     double inc = (totalFrames > 0) ? (double)BUFFER_LEN / totalFrames : 1.0;
@@ -218,7 +266,8 @@ static int render_to_wav(DATA_LOADER *loader, const char *in_name, const char *o
     player.UnloadFile();
     player.UnregisterAllPlayers();
     free(packed);
-    fclose(f);
+    if(use_pipe) pclose(f);
+    else fclose(f);
     return 0;
 }
 
@@ -234,7 +283,7 @@ static bool is_vgm_ext(const fs::path &p) {
 static int process_file(const std::string &in_path, const std::string &out_path) {
     DATA_LOADER *loader = FileLoader_Init(in_path.c_str());
     if(!loader) { fprintf(stderr, "Failed to open: %s\n", in_path.c_str()); return 1; }
-    int ret = render_to_wav(loader, in_path.c_str(), out_path.c_str());
+    int ret = render_to_file(loader, in_path.c_str(), out_path.c_str());
     DataLoader_Deinit(loader);
     return ret;
 }
@@ -246,7 +295,7 @@ static int process_directory(const std::string &in_dir, const std::string &out_d
         if(!entry.is_regular_file() || !is_vgm_ext(entry.path())) continue;
         fs::path rel     = fs::relative(entry.path(), in_dir);
         fs::path out     = fs::path(out_dir) / rel;
-        out.replace_extension(".wav");
+        out.replace_extension(format_extension());
         fs::create_directories(out.parent_path());
         errors += process_file(entry.path().string(), out.string());
     }
@@ -289,10 +338,10 @@ static int process_zip(const std::string &zip_path, const std::string &out_dir) 
         if(!loader) { errors++; continue; }
 
         fs::path out = fs::path(out_dir) / entry_path;
-        out.replace_extension(".wav");
+        out.replace_extension(format_extension());
         fs::create_directories(out.parent_path());
 
-        errors += render_to_wav(loader, st.name, out.string().c_str());
+        errors += render_to_file(loader, st.name, out.string().c_str());
         DataLoader_Deinit(loader);
     }
     zip_close(za);
@@ -332,10 +381,11 @@ int main(int argc, const char *argv[]) {
             return NULL;
         };
 
-        if(str_istarts(arg, "--loops"))      { val = next_val(); if(val) loops       = scan_uint(val); }
+        if(str_istarts(arg, "--loops"))      { val = next_val(); if(val) loops         = scan_uint(val); }
         else if(str_istarts(arg, "--samplerate")) { val = next_val(); if(val) sample_rate = scan_uint(val); }
-        else if(str_istarts(arg, "--bps"))   { val = next_val(); if(val) bit_depth   = scan_uint(val); }
-        else if(str_istarts(arg, "--fade"))  { val = next_val(); if(val) fade_len    = strtod(val, NULL); }
+        else if(str_istarts(arg, "--bps"))   { val = next_val(); if(val) bit_depth    = scan_uint(val); }
+        else if(str_istarts(arg, "--fade"))  { val = next_val(); if(val) fade_len     = strtod(val, NULL); }
+        else if(str_istarts(arg, "--format")) { val = next_val(); if(val) output_format = val; }
         else break;
 
         argv++; argc--;
@@ -349,13 +399,20 @@ int main(int argc, const char *argv[]) {
         fprintf(stderr,
             "Usage: %s [options] <input> <output>\n"
             "  input   : VGM/VGZ/S98/DRO/GYM file, directory, or .zip archive\n"
-            "  output  : WAV file (single input) or directory (folder/zip input)\n"
+            "  output  : audio file (single input) or directory (folder/zip input)\n"
             "Options:\n"
+            "  --format fmt    output format: wav, mp3, aac, flac, ... (default: wav)\n"
             "  --samplerate n  (default: 44100)\n"
             "  --bps n         16/24/32 (default: 16)\n"
             "  --fade x        fade-out seconds (default: 8.0)\n"
             "  --loops n       loop count (default: 2)\n",
             self);
+        return 1;
+    }
+
+    if(output_format != "wav" && !check_ffmpeg()) {
+        fprintf(stderr, "error: ffmpeg not found. Install ffmpeg to use --format %s\n",
+            output_format.c_str());
         return 1;
     }
 
