@@ -101,6 +101,27 @@ python3 -m venv .venv
 | `H` | 도움말 |
 | `Q` | 종료 |
 
+### vgm-play 래퍼 스크립트 설치
+
+PATH에 등록된 커맨드로 간편하게 실행하려면 래퍼 스크립트를 설치합니다.
+
+```bash
+# 프로젝트 경로를 실제 경로로 수정
+cat > ~/.local/bin/vgm-play <<'EOF'
+#!/bin/bash
+exec /path/to/vgm2wav2/.venv/bin/python /path/to/vgm2wav2/player.py "$@"
+EOF
+chmod +x ~/.local/bin/vgm-play
+```
+
+설치 후:
+
+```bash
+vgm-play bgm.vgm
+vgm-play playlist.m3u
+vgm-play *.spc
+```
+
 ## 변환 사용법
 
 ```
