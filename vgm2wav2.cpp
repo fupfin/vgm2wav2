@@ -186,7 +186,7 @@ static FILE *open_output(const char *out_path) {
         std::string cmd = std::string("ffplay -nodisp -autoexit")
             + " -f "  + ffmpeg_pcm_fmt()
             + " -ar " + std::to_string(sample_rate)
-            + " -ac 2 -i pipe:0 2>/dev/null";
+            + " -ch_layout stereo -i -";
         return popen(cmd.c_str(), "w");
     }
     if(output_format != "wav") {
@@ -207,7 +207,7 @@ static FILE *open_output_s16le(const char *out_path) {
         std::string cmd = std::string("ffplay -nodisp -autoexit")
             + " -f s16le"
             + " -ar " + std::to_string(sample_rate)
-            + " -ac 2 -i pipe:0 2>/dev/null";
+            + " -ch_layout stereo -i -";
         return popen(cmd.c_str(), "w");
     }
     if(output_format != "wav") {
