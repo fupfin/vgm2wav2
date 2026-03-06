@@ -101,33 +101,6 @@ python3 -m venv .venv
 | `H` | 도움말 |
 | `Q` | 종료 |
 
-### yazi 연동
-
-yazi 파일 매니저에서 지원 확장자 파일에 Enter를 누르면 플레이어가 실행되도록 설정할 수 있습니다.
-
-래퍼 스크립트 설치:
-```bash
-# 프로젝트 경로를 실제 경로로 수정
-cat > ~/.local/bin/vgm-play <<'EOF'
-#!/bin/bash
-exec /path/to/vgm2wav2/.venv/bin/python /path/to/vgm2wav2/player.py "$@"
-EOF
-chmod +x ~/.local/bin/vgm-play
-```
-
-`~/.config/yazi/yazi.toml`:
-```toml
-[opener]
-vgm = [
-  { run = 'vgm-play "$@"', block = true, desc = "VGM Player" },
-]
-
-[open]
-rules = [
-  { name = "*.{vgm,vgz,s98,dro,gym,nsf,nsfe,spc,ay,gbs,hes,kss,sap}", use = "vgm" },
-]
-```
-
 ## 변환 사용법
 
 ```

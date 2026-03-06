@@ -682,6 +682,10 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
+    if(play_mode && stdout_mode) {
+        fprintf(stderr, "error: --play and --stdout are mutually exclusive\n");
+        return 1;
+    }
     if(play_mode && !check_ffplay()) {
         fprintf(stderr, "error: ffplay not found. Install ffmpeg (includes ffplay) to use --play\n");
         return 1;

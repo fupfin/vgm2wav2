@@ -298,6 +298,7 @@ class AudioEngine:
             except Exception:
                 pass
             self._proc.kill()
+            self._proc.wait()
             self._proc = None
         with self._vis_lock:
             self.vis_data = np.zeros(VIS_BINS)
