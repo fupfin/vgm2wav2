@@ -66,21 +66,61 @@ cmake --build build
 - `build/vgm2wav2` — 이 프로젝트의 메인 도구 (폴더/ZIP/포맷 변환 지원)
 - `build/libvgm/bin/vgm2wav` — libvgm 원본 (단일 파일 전용, stdout 출력 가능)
 
-## 사용법
+## TUI 플레이어
+
+터미널에서 직접 재생할 수 있는 Textual 기반 TUI 플레이어입니다.
+
+### 의존성 설치
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+### 실행
+
+```bash
+# 단일 파일
+.venv/bin/python player.py bgm.vgm
+
+# M3U 재생목록
+.venv/bin/python player.py playlist.m3u
+
+# 여러 파일
+.venv/bin/python player.py *.spc
+```
+
+### 키 조작
+
+| 키 | 동작 |
+|----|------|
+| `Space` | 재생 / 일시정지 |
+| `N` | 다음 곡 |
+| `P` | 이전 곡 (3초 이내: 현재 곡 처음부터) |
+| `Enter` | 재생목록에서 선택한 곡 재생 |
+| `H` | 도움말 |
+| `Q` | 종료 |
+
+## 변환 사용법
 
 ```
-vgm2wav2 [options] <input> <output>
+vgm2wav2 [options] <input> [output]
 
   input   : 오디오 파일, 디렉토리, 또는 .zip 아카이브
   output  : 오디오 파일 (단일 파일 입력) 또는 디렉토리 (폴더/ZIP 입력)
+            (--play / --stdout 사용 시 생략 가능)
 
 Options:
+  --play           터미널에서 직접 재생 (ffplay 필요)
+  --stdout         raw PCM (s16le 44100 stereo) 을 stdout으로 출력
   --format fmt     출력 포맷: wav, mp3, aac, flac, ... (기본값: wav)
   --engine e       엔진 선택: auto, libvgm, gme (기본값: auto)
   --samplerate n   샘플레이트 (기본값: 44100)
   --bps n          비트 심도: 16 / 24 / 32 (기본값: 16; GME 엔진에서는 무시됨)
   --fade x         페이드아웃 길이, 초 단위 (기본값: 8.0)
   --loops n        루프 횟수 (기본값: 2)
+  --skip           출력 파일이 이미 존재하면 건너뜀
+  --dryrun         실제 변환 없이 동작만 출력
 ```
 
 ### 엔진 선택

@@ -46,6 +46,7 @@ static std::string   output_format = "wav";  // wav, mp3, aac, flac, ...
 static bool          dry_run       = false;
 static bool          skip_existing = false;
 static bool          play_mode     = false;
+static bool          stdout_mode   = false;
 
 enum class Engine { Auto, LibVGM, GME };
 static Engine engine = Engine::Auto;
@@ -178,7 +179,7 @@ static bool check_ffplay() {
 
 // Returns true if output goes through a pipe (play or encode)
 static bool is_piped_output() {
-    return play_mode || output_format != "wav";
+    return play_mode || stdout_mode || output_format != "wav";
 }
 
 static FILE *open_output(const char *out_path) {
@@ -189,6 +190,7 @@ static FILE *open_output(const char *out_path) {
             + " -ch_layout stereo -i -";
         return popen(cmd.c_str(), "w");
     }
+    if(stdout_mode) return stdout;
     if(output_format != "wav") {
         std::string cmd = std::string("ffmpeg -y")
             + " -f "  + ffmpeg_pcm_fmt()
@@ -210,6 +212,7 @@ static FILE *open_output_s16le(const char *out_path) {
             + " -ch_layout stereo -i -";
         return popen(cmd.c_str(), "w");
     }
+    if(stdout_mode) return stdout;
     if(output_format != "wav") {
         std::string cmd = std::string("ffmpeg -y")
             + " -f s16le"
@@ -224,7 +227,8 @@ static FILE *open_output_s16le(const char *out_path) {
 }
 
 static void close_output(FILE *f) {
-    if(is_piped_output()) pclose(f);
+    if(stdout_mode) { fflush(f); return; }
+    if(play_mode || output_format != "wav") pclose(f);
     else fclose(f);
 }
 
@@ -332,6 +336,9 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
     if(play_mode)
         fprintf(stderr, "Playing: %s  [%.1fs]\n",
             in_name, plrEngine->Sample2Second(totalFrames));
+    else if(stdout_mode)
+        fprintf(stderr, "%s  [%.1fs]\n",
+            in_name, plrEngine->Sample2Second(totalFrames));
     else
         fprintf(stderr, "%s -> %s  [%.1fs]\n",
             in_name, out_path, plrEngine->Sample2Second(totalFrames));
@@ -341,8 +348,7 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
 
     double complete = 0.0;
     double inc = (totalFrames > 0) ? (double)BUFFER_LEN / totalFrames : 1.0;
-    fprintf(stderr, "[");
-    fflush(stderr);
+    if(!stdout_mode) { fprintf(stderr, "["); fflush(stderr); }
 
     while(totalFrames) {
         memset(packed, 0, sizeof(INT32) * BUFFER_LEN * 2);
@@ -352,9 +358,9 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
         fwrite(packed, (bit_depth / 8) * 2, curFrames, f);
         totalFrames -= curFrames;
         complete += inc;
-        if(complete >= 0.10) { complete -= 0.10; fprintf(stderr, "-"); fflush(stderr); }
+        if(!stdout_mode && complete >= 0.10) { complete -= 0.10; fprintf(stderr, "-"); fflush(stderr); }
     }
-    fprintf(stderr, "]\n");
+    if(!stdout_mode) fprintf(stderr, "]\n");
 
     player.Stop();
     player.UnloadFile();
@@ -413,6 +419,9 @@ static int render_gme_track(Music_Emu *emu, int track_idx,
     if(play_mode)
         fprintf(stderr, "Playing: %s [track %d]  [%.1fs]\n",
             in_name, track_idx + 1, total_ms / 1000.0);
+    else if(stdout_mode)
+        fprintf(stderr, "%s [track %d]  [%.1fs]\n",
+            in_name, track_idx + 1, total_ms / 1000.0);
     else
         fprintf(stderr, "%s [track %d] -> %s  [%.1fs]\n",
             in_name, track_idx + 1, out_path, total_ms / 1000.0);
@@ -424,8 +433,7 @@ static int render_gme_track(Music_Emu *emu, int track_idx,
     unsigned int frames_left = total_frames;
     double complete = 0.0;
     double inc = (frames_left > 0) ? (double)BUFFER_LEN / frames_left : 1.0;
-    fprintf(stderr, "[");
-    fflush(stderr);
+    if(!stdout_mode) { fprintf(stderr, "["); fflush(stderr); }
 
     while(frames_left > 0 && !gme_track_ended(emu)) {
         unsigned int cur = (BUFFER_LEN < frames_left) ? BUFFER_LEN : frames_left;
@@ -434,9 +442,9 @@ static int render_gme_track(Music_Emu *emu, int track_idx,
         fwrite(buf.data(), sizeof(short), cur * 2, f);
         frames_left -= cur;
         complete += inc;
-        if(complete >= 0.10) { complete -= 0.10; fprintf(stderr, "-"); fflush(stderr); }
+        if(!stdout_mode && complete >= 0.10) { complete -= 0.10; fprintf(stderr, "-"); fflush(stderr); }
     }
-    fprintf(stderr, "]\n");
+    if(!stdout_mode) fprintf(stderr, "]\n");
 
     close_output(f);
     return 0;
@@ -455,7 +463,7 @@ static int process_gme_file(const std::string &in_path, const std::string &out_p
     for(int t = 0; t < track_count; t++) {
         std::string tpath = gme_track_path(out_path, t, track_count);
         // ensure parent directory exists
-        fs::create_directories(fs::path(tpath).parent_path());
+        { auto p = fs::path(tpath).parent_path(); if(!p.empty()) fs::create_directories(p); }
         errors += render_gme_track(emu, t, in_path.c_str(), tpath.c_str());
     }
 
@@ -476,7 +484,7 @@ static int process_gme_data(const void *data, long size,
     int errors = 0;
     for(int t = 0; t < track_count; t++) {
         std::string tpath = gme_track_path(out_path, t, track_count);
-        fs::create_directories(fs::path(tpath).parent_path());
+        { auto p = fs::path(tpath).parent_path(); if(!p.empty()) fs::create_directories(p); }
         errors += render_gme_track(emu, t, in_name, tpath.c_str());
     }
 
@@ -636,6 +644,7 @@ int main(int argc, const char *argv[]) {
         else if(str_equals(arg, "--dryrun"))  { dry_run = true; }
         else if(str_equals(arg, "--skip"))    { skip_existing = true; }
         else if(str_equals(arg, "--play"))    { play_mode = true; }
+        else if(str_equals(arg, "--stdout"))  { stdout_mode = true; }
         else break;
 
         argv++; argc--;
@@ -645,7 +654,7 @@ int main(int argc, const char *argv[]) {
     if(sample_rate == 0) sample_rate = 44100;
     if(bit_depth != 16 && bit_depth != 24 && bit_depth != 32) bit_depth = 16;
 
-    if(argc < 1 || (!play_mode && argc < 2)) {
+    if(argc < 1 || (!play_mode && !stdout_mode && argc < 2)) {
         fprintf(stderr,
             "Usage: %s [options] <input> [output]\n"
             "  input   : audio file, directory, or .zip archive\n"
@@ -660,6 +669,7 @@ int main(int argc, const char *argv[]) {
             "\n"
             "Options:\n"
             "  --play          play directly in terminal (requires ffplay)\n"
+            "  --stdout        output raw PCM (s16le 44100 stereo) to stdout\n"
             "  --format fmt    output format: wav, mp3, aac, flac, ... (default: wav)\n"
             "  --engine e      engine: auto, libvgm, gme (default: auto)\n"
             "  --samplerate n  (default: 44100)\n"
@@ -672,6 +682,10 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
+    if(play_mode && stdout_mode) {
+        fprintf(stderr, "error: --play and --stdout are mutually exclusive\n");
+        return 1;
+    }
     if(play_mode && !check_ffplay()) {
         fprintf(stderr, "error: ffplay not found. Install ffmpeg (includes ffplay) to use --play\n");
         return 1;
