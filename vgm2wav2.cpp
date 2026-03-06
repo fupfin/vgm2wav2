@@ -45,6 +45,7 @@ static unsigned int  loops         = 2;
 static std::string   output_format = "wav";  // wav, mp3, aac, flac, ...
 static bool          dry_run       = false;
 static bool          skip_existing = false;
+static bool          play_mode     = false;
 
 enum class Engine { Auto, LibVGM, GME };
 static Engine engine = Engine::Auto;
@@ -169,6 +170,64 @@ static bool check_ffmpeg() {
     return pclose(p) == 0;
 }
 
+static bool check_ffplay() {
+    FILE *p = popen("ffplay -version > /dev/null 2>&1", "r");
+    if(!p) return false;
+    return pclose(p) == 0;
+}
+
+// Returns true if output goes through a pipe (play or encode)
+static bool is_piped_output() {
+    return play_mode || output_format != "wav";
+}
+
+static FILE *open_output(const char *out_path) {
+    if(play_mode) {
+        std::string cmd = std::string("ffplay -nodisp -autoexit")
+            + " -f "  + ffmpeg_pcm_fmt()
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2 -i pipe:0 2>/dev/null";
+        return popen(cmd.c_str(), "w");
+    }
+    if(output_format != "wav") {
+        std::string cmd = std::string("ffmpeg -y")
+            + " -f "  + ffmpeg_pcm_fmt()
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2"
+            + " -i pipe:0"
+            + " " + shell_quote(out_path)
+            + " 2>/dev/null";
+        return popen(cmd.c_str(), "w");
+    }
+    return fopen(out_path, "wb");
+}
+
+static FILE *open_output_s16le(const char *out_path) {
+    if(play_mode) {
+        std::string cmd = std::string("ffplay -nodisp -autoexit")
+            + " -f s16le"
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2 -i pipe:0 2>/dev/null";
+        return popen(cmd.c_str(), "w");
+    }
+    if(output_format != "wav") {
+        std::string cmd = std::string("ffmpeg -y")
+            + " -f s16le"
+            + " -ar " + std::to_string(sample_rate)
+            + " -ac 2"
+            + " -i pipe:0"
+            + " " + shell_quote(out_path)
+            + " 2>/dev/null";
+        return popen(cmd.c_str(), "w");
+    }
+    return fopen(out_path, "wb");
+}
+
+static void close_output(FILE *f) {
+    if(is_piped_output()) pclose(f);
+    else fclose(f);
+}
+
 /* ---- input type helpers ---- */
 
 static bool is_vgm_ext(const fs::path &p) {
@@ -257,22 +316,9 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
         player.SetLoopCount(vgmplay->GetModifiedLoopCount(loops));
     }
 
-    bool use_pipe = (output_format != "wav");
-    FILE *f;
-    if(use_pipe) {
-        std::string cmd = std::string("ffmpeg -y")
-            + " -f "  + ffmpeg_pcm_fmt()
-            + " -ar " + std::to_string(sample_rate)
-            + " -ac 2"
-            + " -i pipe:0"
-            + " " + shell_quote(out_path)
-            + " 2>/dev/null";
-        f = popen(cmd.c_str(), "w");
-    } else {
-        f = fopen(out_path, "wb");
-    }
+    FILE *f = open_output(out_path);
     if(!f) {
-        fprintf(stderr, "Cannot open output: %s\n", out_path);
+        fprintf(stderr, "Cannot open output: %s\n", play_mode ? "(playback)" : out_path);
         free(packed);
         return 1;
     }
@@ -283,11 +329,14 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
     if(plrEngine->GetLoopTicks() > 0)
         totalFrames += player.GetFadeSamples();
 
-    fprintf(stderr, "%s -> %s  [%.1fs]\n",
-        in_name, out_path,
-        plrEngine->Sample2Second(totalFrames));
+    if(play_mode)
+        fprintf(stderr, "Playing: %s  [%.1fs]\n",
+            in_name, plrEngine->Sample2Second(totalFrames));
+    else
+        fprintf(stderr, "%s -> %s  [%.1fs]\n",
+            in_name, out_path, plrEngine->Sample2Second(totalFrames));
 
-    if(!use_pipe)
+    if(!is_piped_output())
         write_wav_header(f, totalFrames, bit_depth);
 
     double complete = 0.0;
@@ -311,8 +360,7 @@ static int render_to_file(DATA_LOADER *loader, const char *in_name, const char *
     player.UnloadFile();
     player.UnregisterAllPlayers();
     free(packed);
-    if(use_pipe) pclose(f);
-    else fclose(f);
+    close_output(f);
     return 0;
 }
 
@@ -356,29 +404,20 @@ static int render_gme_track(Music_Emu *emu, int track_idx,
 
     unsigned int total_frames = (unsigned int)((long long)total_ms * sample_rate / 1000);
 
-    bool use_pipe = (output_format != "wav");
-    FILE *f;
-    if(use_pipe) {
-        std::string cmd = std::string("ffmpeg -y")
-            + " -f s16le"
-            + " -ar " + std::to_string(sample_rate)
-            + " -ac 2"
-            + " -i pipe:0"
-            + " " + shell_quote(out_path)
-            + " 2>/dev/null";
-        f = popen(cmd.c_str(), "w");
-    } else {
-        f = fopen(out_path, "wb");
-    }
+    FILE *f = open_output_s16le(out_path);
     if(!f) {
-        fprintf(stderr, "Cannot open output: %s\n", out_path);
+        fprintf(stderr, "Cannot open output: %s\n", play_mode ? "(playback)" : out_path);
         return 1;
     }
 
-    fprintf(stderr, "%s [track %d] -> %s  [%.1fs]\n",
-        in_name, track_idx + 1, out_path, total_ms / 1000.0);
+    if(play_mode)
+        fprintf(stderr, "Playing: %s [track %d]  [%.1fs]\n",
+            in_name, track_idx + 1, total_ms / 1000.0);
+    else
+        fprintf(stderr, "%s [track %d] -> %s  [%.1fs]\n",
+            in_name, track_idx + 1, out_path, total_ms / 1000.0);
 
-    if(!use_pipe)
+    if(!is_piped_output())
         write_wav_header(f, total_frames, 16);
 
     std::vector<short> buf(BUFFER_LEN * 2);
@@ -399,8 +438,7 @@ static int render_gme_track(Music_Emu *emu, int track_idx,
     }
     fprintf(stderr, "]\n");
 
-    if(use_pipe) pclose(f);
-    else fclose(f);
+    close_output(f);
     return 0;
 }
 
@@ -471,15 +509,19 @@ static int process_file(const std::string &in_path, const std::string &out_path)
 }
 
 static int process_directory(const std::string &in_dir, const std::string &out_dir) {
-    fs::create_directories(out_dir);
+    if(!play_mode) fs::create_directories(out_dir);
     int errors = 0;
     for(auto &entry : fs::recursive_directory_iterator(in_dir)) {
         if(!entry.is_regular_file() || !is_music_ext(entry.path())) continue;
-        fs::path rel     = fs::relative(entry.path(), in_dir);
-        fs::path out     = fs::path(out_dir) / rel;
-        out.replace_extension(format_extension());
-        fs::create_directories(out.parent_path());
-        errors += process_file(entry.path().string(), out.string());
+        std::string out_path;
+        if(!play_mode) {
+            fs::path rel = fs::relative(entry.path(), in_dir);
+            fs::path out = fs::path(out_dir) / rel;
+            out.replace_extension(format_extension());
+            fs::create_directories(out.parent_path());
+            out_path = out.string();
+        }
+        errors += process_file(entry.path().string(), out_path);
     }
     return errors;
 }
@@ -593,6 +635,7 @@ int main(int argc, const char *argv[]) {
         }
         else if(str_equals(arg, "--dryrun"))  { dry_run = true; }
         else if(str_equals(arg, "--skip"))    { skip_existing = true; }
+        else if(str_equals(arg, "--play"))    { play_mode = true; }
         else break;
 
         argv++; argc--;
@@ -602,11 +645,12 @@ int main(int argc, const char *argv[]) {
     if(sample_rate == 0) sample_rate = 44100;
     if(bit_depth != 16 && bit_depth != 24 && bit_depth != 32) bit_depth = 16;
 
-    if(argc < 2) {
+    if(argc < 1 || (!play_mode && argc < 2)) {
         fprintf(stderr,
-            "Usage: %s [options] <input> <output>\n"
+            "Usage: %s [options] <input> [output]\n"
             "  input   : audio file, directory, or .zip archive\n"
             "  output  : audio file (single input) or directory (folder/zip input)\n"
+            "            (not required when using --play)\n"
             "\n"
             "Supported formats:\n"
             "  libvgm  : VGM, VGZ, S98, DRO, GYM\n"
@@ -615,6 +659,7 @@ int main(int argc, const char *argv[]) {
 #endif
             "\n"
             "Options:\n"
+            "  --play          play directly in terminal (requires ffplay)\n"
             "  --format fmt    output format: wav, mp3, aac, flac, ... (default: wav)\n"
             "  --engine e      engine: auto, libvgm, gme (default: auto)\n"
             "  --samplerate n  (default: 44100)\n"
@@ -627,14 +672,18 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
-    if(output_format != "wav" && !check_ffmpeg()) {
+    if(play_mode && !check_ffplay()) {
+        fprintf(stderr, "error: ffplay not found. Install ffmpeg (includes ffplay) to use --play\n");
+        return 1;
+    }
+    if(!play_mode && output_format != "wav" && !check_ffmpeg()) {
         fprintf(stderr, "error: ffmpeg not found. Install ffmpeg to use --format %s\n",
             output_format.c_str());
         return 1;
     }
 
     fs::path in(argv[0]);
-    std::string out(argv[1]);
+    std::string out = (argc >= 2) ? argv[1] : "";
 
     if(fs::is_directory(in)) {
         return process_directory(in.string(), out);
