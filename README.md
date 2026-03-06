@@ -122,9 +122,10 @@ vgm = [
   { run = 'vgm-play "$@"', block = true, desc = "VGM Player" },
 ]
 
-[[opener.rules]]
-name = "*.{vgm,vgz,s98,dro,gym,nsf,nsfe,spc,ay,gbs,hes,kss,sap}"
-use  = "vgm"
+[open]
+rules = [
+  { name = "*.{vgm,vgz,s98,dro,gym,nsf,nsfe,spc,ay,gbs,hes,kss,sap}", use = "vgm" },
+]
 ```
 
 ## 변환 사용법
