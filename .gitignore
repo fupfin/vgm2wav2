@@ -1,2 +1,5 @@
 build/
 output/
+.venv/
+__pycache__/
+*.pyc
