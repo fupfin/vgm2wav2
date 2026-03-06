@@ -463,7 +463,7 @@ static int process_gme_file(const std::string &in_path, const std::string &out_p
     for(int t = 0; t < track_count; t++) {
         std::string tpath = gme_track_path(out_path, t, track_count);
         // ensure parent directory exists
-        fs::create_directories(fs::path(tpath).parent_path());
+        { auto p = fs::path(tpath).parent_path(); if(!p.empty()) fs::create_directories(p); }
         errors += render_gme_track(emu, t, in_path.c_str(), tpath.c_str());
     }
 
@@ -484,7 +484,7 @@ static int process_gme_data(const void *data, long size,
     int errors = 0;
     for(int t = 0; t < track_count; t++) {
         std::string tpath = gme_track_path(out_path, t, track_count);
-        fs::create_directories(fs::path(tpath).parent_path());
+        { auto p = fs::path(tpath).parent_path(); if(!p.empty()) fs::create_directories(p); }
         errors += render_gme_track(emu, t, in_name, tpath.c_str());
     }
 
