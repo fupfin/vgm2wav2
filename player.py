@@ -457,6 +457,48 @@ class AudioFileTree(DirectoryTree):
     def filter_paths(self, paths):
         return [p for p in paths if p.is_dir() or p.suffix.lower() in AUDIO_EXTS]
 
+    def on_key(self, event) -> None:
+        if event.key == "backspace":
+            parent = self.path.parent
+            if parent != self.path:   # stop at filesystem root
+                self.path = parent
+            event.stop()             # don't collapse node
+
+
+# ── Goto directory modal ──────────────────────────────────────────────────
+
+class GotoDirectoryScreen(ModalScreen):
+    DEFAULT_CSS = """
+    GotoDirectoryScreen { align: center middle; }
+    GotoDirectoryScreen > Vertical {
+        width: 70;
+        height: auto;
+        padding: 2 3;
+        border: double $accent;
+        background: $surface;
+    }
+    GotoDirectoryScreen Label { margin-bottom: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", show=False)]
+
+    def __init__(self, current_path: str):
+        super().__init__()
+        self._current_path = current_path
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("디렉토리 이동 — 경로 입력 후 Enter, 취소는 Esc")
+            yield Input(value=self._current_path, id="dirpath")
+
+    def on_mount(self):
+        inp = self.query_one("#dirpath", Input)
+        inp.focus()
+        inp.action_end()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
 
 # ── Save playlist modal ───────────────────────────────────────────────────
 
@@ -503,7 +545,8 @@ HELP_TEXT = """\
 
 [bold]탭 전환[/bold]
   [yellow]L[/yellow]          재생목록
-  [yellow]F[/yellow]          파일 탐색기 (방향키로 탐색, Enter로 재생)
+  [yellow]F[/yellow]          파일 탐색기 (방향키 탐색, Enter 재생, Backspace 상위폴더)
+  [yellow]G[/yellow]          경로 직접 입력으로 이동
   [yellow]S[/yellow]          재생목록을 M3U 파일로 저장
 
 [bold]기타[/bold]
@@ -551,6 +594,7 @@ class PlayerApp(App):
         Binding("p",         "prev_track",     "Prev"),
         Binding("l",         "show_playlist",  "재생목록"),
         Binding("f",         "show_files",     "파일탐색기"),
+        Binding("g",         "goto_dir",       "경로이동"),
         Binding("s",         "save_playlist",  "저장"),
         Binding("h",         "help",           "Help"),
         Binding("q",         "quit",           "Quit"),
@@ -624,6 +668,22 @@ class PlayerApp(App):
 
     def action_help(self):
         self.push_screen(HelpScreen())
+
+    def action_goto_dir(self):
+        tree = self.query_one("#filetree", AudioFileTree)
+        current = str(tree.path)
+
+        def _on_goto(path_str: str | None) -> None:
+            if not path_str:
+                return
+            p = Path(path_str)
+            if p.is_dir():
+                tree.path = p
+                self.action_show_files()
+            else:
+                self.notify(f"디렉토리를 찾을 수 없습니다: {path_str}", severity="error")
+
+        self.push_screen(GotoDirectoryScreen(current), _on_goto)
 
     def action_save_playlist(self):
         if not self.playlist:
