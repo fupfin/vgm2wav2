@@ -182,13 +182,23 @@ static bool is_piped_output() {
     return play_mode || stdout_mode || output_format != "wav";
 }
 
+static FILE *open_pipe_write(const std::string &cmd) {
+    // Use "wb" (binary mode) to prevent Windows CRT from translating
+    // 0x0A bytes to 0x0D 0x0A, which corrupts raw PCM data.
+    FILE *f = popen(cmd.c_str(), "wb");
+    // Increase userspace write buffer to reduce pipe-blocking stutter on
+    // Windows (default pipe buffer is 4 KB; ffplay reads in ~8 KB chunks).
+    if(f) setvbuf(f, NULL, _IOFBF, 256 * 1024);
+    return f;
+}
+
 static FILE *open_output(const char *out_path) {
     if(play_mode) {
         std::string cmd = std::string("ffplay -nodisp -autoexit")
             + " -f "  + ffmpeg_pcm_fmt()
             + " -ar " + std::to_string(sample_rate)
             + " -ch_layout stereo -i -";
-        return popen(cmd.c_str(), "w");
+        return open_pipe_write(cmd);
     }
     if(stdout_mode) return stdout;
     if(output_format != "wav") {
@@ -199,7 +209,7 @@ static FILE *open_output(const char *out_path) {
             + " -i pipe:0"
             + " " + shell_quote(out_path)
             + " 2>/dev/null";
-        return popen(cmd.c_str(), "w");
+        return open_pipe_write(cmd);
     }
     return fopen(out_path, "wb");
 }
@@ -210,7 +220,7 @@ static FILE *open_output_s16le(const char *out_path) {
             + " -f s16le"
             + " -ar " + std::to_string(sample_rate)
             + " -ch_layout stereo -i -";
-        return popen(cmd.c_str(), "w");
+        return open_pipe_write(cmd);
     }
     if(stdout_mode) return stdout;
     if(output_format != "wav") {
@@ -221,7 +231,7 @@ static FILE *open_output_s16le(const char *out_path) {
             + " -i pipe:0"
             + " " + shell_quote(out_path)
             + " 2>/dev/null";
-        return popen(cmd.c_str(), "w");
+        return open_pipe_write(cmd);
     }
     return fopen(out_path, "wb");
 }
