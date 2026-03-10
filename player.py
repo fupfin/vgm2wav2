@@ -462,8 +462,11 @@ HELP_TEXT = """\
   [yellow]↑ / ↓[/yellow]     재생목록 이동
   [yellow]Enter[/yellow]      선택한 곡 재생
 
+[bold]탭 전환[/bold]
+  [yellow]L[/yellow]          재생목록
+  [yellow]F[/yellow]          파일 탐색기 (방향키로 탐색, Enter로 재생)
+
 [bold]기타[/bold]
-  [yellow]F[/yellow]          파일 탐색기 / 재생목록 전환
   [yellow]H[/yellow]          이 도움말 표시 / 닫기
   [yellow]Q[/yellow]          종료
 
@@ -503,12 +506,13 @@ class PlayerApp(App):
     """
 
     BINDINGS = [
-        Binding("space",     "toggle_pause", "Play/Pause"),
-        Binding("n",         "next_track",   "Next"),
-        Binding("p",         "prev_track",   "Prev"),
-        Binding("f",         "show_files",   "Files"),
-        Binding("h",         "help",         "Help"),
-        Binding("q",         "quit",         "Quit"),
+        Binding("space",     "toggle_pause",   "Play/Pause"),
+        Binding("n",         "next_track",     "Next"),
+        Binding("p",         "prev_track",     "Prev"),
+        Binding("l",         "show_playlist",  "재생목록"),
+        Binding("f",         "show_files",     "파일탐색기"),
+        Binding("h",         "help",           "Help"),
+        Binding("q",         "quit",           "Quit"),
     ]
 
     def __init__(self, playlist: list[tuple[str, Optional[str]]], binary: str,
@@ -542,6 +546,8 @@ class PlayerApp(App):
         self.set_interval(1 / 20, self._tick)
         if self.playlist:
             self._play_current()
+        else:
+            self.call_after_refresh(self.action_show_files)
 
     # ── UI update loop ────────────────────────────────────────────────────
 
@@ -578,12 +584,13 @@ class PlayerApp(App):
     def action_help(self):
         self.push_screen(HelpScreen())
 
+    def action_show_playlist(self):
+        self.query_one("#tabs", TabbedContent).active = "tab-playlist"
+        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
+
     def action_show_files(self):
-        tabs = self.query_one("#tabs", TabbedContent)
-        if tabs.active == "tab-files":
-            tabs.active = "tab-playlist"
-        else:
-            tabs.active = "tab-files"
+        self.query_one("#tabs", TabbedContent).active = "tab-files"
+        self.call_after_refresh(lambda: self.query_one("#filetree", AudioFileTree).focus())
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         path = event.path
@@ -596,7 +603,7 @@ class PlayerApp(App):
         lv.append(ListItem(Label(title), id=f"track_{idx}"))
         self.current = idx
         self._play_current()
-        self.query_one("#tabs", TabbedContent).active = "tab-playlist"
+        self.action_show_playlist()
 
     def action_toggle_pause(self):
         self.engine.toggle_pause()
@@ -633,8 +640,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="VGM TUI Player")
-    parser.add_argument("input", nargs="+",
-                        help="VGM/SPC/NSF files or .m3u playlist")
+    parser.add_argument("input", nargs="*",
+                        help="VGM/SPC/NSF files or .m3u playlist (optional; omit to open file browser)")
     parser.add_argument("--bin", default="vgm2wav2",
                         help="path to vgm2wav2 binary (default: vgm2wav2)")
     parser.add_argument("--loops", type=int, default=2)
@@ -648,10 +655,6 @@ def main():
             playlist.extend(parse_m3u(str(p)))
         else:
             playlist.append((str(p), None))
-
-    if not playlist:
-        print("No playable files found.", file=sys.stderr)
-        sys.exit(1)
 
     # resolve binary path
     binary = args.bin
