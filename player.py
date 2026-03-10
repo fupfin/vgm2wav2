@@ -60,6 +60,7 @@ AUDIO_EXTS = {
     '.vgm', '.vgz', '.s98', '.dro', '.gym',
     '.nsf', '.nsfe', '.spc', '.gbs', '.ay', '.hes', '.kss', '.sap',
 }
+PLAYLIST_EXTS = {'.m3u'}
 
 SAMPLE_RATE  = 44100
 CHANNELS     = 2
@@ -455,7 +456,8 @@ class AudioFileTree(DirectoryTree):
     """DirectoryTree that shows only directories and supported audio files."""
 
     def filter_paths(self, paths):
-        return [p for p in paths if p.is_dir() or p.suffix.lower() in AUDIO_EXTS]
+        return [p for p in paths
+                if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | PLAYLIST_EXTS]
 
     def on_key(self, event) -> None:
         if event.key == "backspace":
@@ -714,14 +716,28 @@ class PlayerApp(App):
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         path = event.path
-        if path.suffix.lower() not in AUDIO_EXTS:
-            return
-        title = path.stem
-        self.playlist.append((str(path), None))
-        idx = len(self.playlist) - 1
+        ext = path.suffix.lower()
         lv = self.query_one("#playlist", ListView)
-        lv.append(ListItem(Label(title), id=f"track_{idx}"))
-        self.current = idx
+
+        if ext in PLAYLIST_EXTS:
+            # Load all tracks from the M3U into the playlist
+            tracks = parse_m3u(str(path))
+            if not tracks:
+                self.notify("재생목록이 비어 있거나 읽을 수 없습니다", severity="warning")
+                return
+            for fp, title in tracks:
+                idx = len(self.playlist)
+                self.playlist.append((fp, title))
+                lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{idx}"))
+            self.current = len(self.playlist) - len(tracks)
+        elif ext in AUDIO_EXTS:
+            idx = len(self.playlist)
+            self.playlist.append((str(path), None))
+            lv.append(ListItem(Label(path.stem), id=f"track_{idx}"))
+            self.current = idx
+        else:
+            return
+
         self._play_current()
         self.action_show_playlist()
 
