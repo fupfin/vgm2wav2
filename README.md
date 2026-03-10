@@ -53,6 +53,7 @@ brew install libzip game-music-emu ffmpeg
 
 ### 빌드
 
+macOS / Linux:
 ```bash
 git clone --recurse-submodules https://github.com/yourname/vgm2wav2
 cd vgm2wav2
@@ -60,11 +61,24 @@ cmake -B build -S .
 cmake --build build
 ```
 
+Windows (MSYS2 MinGW64 또는 PowerShell):
+```powershell
+git clone --recurse-submodules https://github.com/yourname/vgm2wav2
+cd vgm2wav2
+cmake -B build -S . -G "MinGW Makefiles"
+cmake --build build --target vgm2wav2
+```
+
+> MSYS2가 없으면 [msys2.org](https://www.msys2.org)에서 설치 후 MinGW64 패키지를 설치합니다:
+> ```bash
+> pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+> ```
+
 빌드 시 libgme가 감지되면 `libgme found: GME engine support enabled` 메시지가 출력됩니다.
 
 빌드 결과물:
-- `build/vgm2wav2` — 이 프로젝트의 메인 도구 (폴더/ZIP/포맷 변환 지원)
-- `build/libvgm/bin/vgm2wav` — libvgm 원본 (단일 파일 전용, stdout 출력 가능)
+- `build/vgm2wav2` (Linux/macOS) / `build/vgm2wav2.exe` (Windows)
+- `build/libvgm/bin/vgm2wav` — libvgm 원본 (단일 파일 전용)
 
 ## TUI 플레이어
 
@@ -120,6 +134,29 @@ Windows:
 | `Enter` | 재생목록에서 선택한 곡 재생 |
 | `H` | 도움말 |
 | `Q` | 종료 |
+
+### 독립 실행 파일 빌드 (PyInstaller)
+
+`vgm2wav2` 바이너리와 Python 환경을 하나의 디렉토리로 패키징합니다.
+
+```bash
+# PyInstaller 설치 (최초 1회)
+.venv/bin/pip install pyinstaller       # Linux/macOS
+.venv\Scripts\pip install pyinstaller   # Windows
+
+# vgm2wav2를 먼저 빌드한 후 실행
+.venv/bin/pyinstaller player.spec       # Linux/macOS
+.venv\Scripts\pyinstaller player.spec   # Windows
+```
+
+빌드 결과물: `dist/vgm-player/` 디렉토리
+- `dist/vgm-player/vgm-player` (또는 `.exe`) — 플레이어 실행 파일
+- `dist/vgm-player/vgm2wav2` (또는 `.exe`) — 자동 번들됨
+
+```bash
+dist/vgm-player/vgm-player bgm.vgm
+dist\vgm-player\vgm-player.exe bgm.vgm   # Windows
+```
 
 ### vgm-play 래퍼 스크립트 설치
 
