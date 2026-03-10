@@ -544,10 +544,11 @@ HELP_TEXT = """\
 [bold]재생목록[/bold]
   [yellow]↑ / ↓[/yellow]     재생목록 이동
   [yellow]Enter[/yellow]      선택한 곡 재생
+  [yellow]Delete[/yellow]     선택한 곡 삭제
 
 [bold]탭 전환[/bold]
-  [yellow]L[/yellow]          재생목록
-  [yellow]F[/yellow]          파일 탐색기 (방향키 탐색, Enter 재생, Backspace 상위폴더)
+  [yellow]L / F[/yellow]      재생목록 ↔ 파일 탐색기 토글
+  [yellow]Backspace[/yellow]  탐색기에서 상위 폴더
   [yellow]G[/yellow]          경로 직접 입력으로 이동
   [yellow]S[/yellow]          재생목록을 M3U 파일로 저장
 
@@ -594,10 +595,11 @@ class PlayerApp(App):
         Binding("space",     "toggle_pause",   "Play/Pause"),
         Binding("n",         "next_track",     "Next"),
         Binding("p",         "prev_track",     "Prev"),
-        Binding("l",         "show_playlist",  "재생목록"),
-        Binding("f",         "show_files",     "파일탐색기"),
+        Binding("l",         "toggle_tab",     "목록/탐색기"),
+        Binding("f",         "toggle_tab",     "목록/탐색기", show=False),
         Binding("g",         "goto_dir",       "경로이동"),
         Binding("s",         "save_playlist",  "저장"),
+        Binding("delete",    "delete_track",   "삭제"),
         Binding("h",         "help",           "Help"),
         Binding("q",         "quit",           "Quit"),
     ]
@@ -706,12 +708,18 @@ class PlayerApp(App):
 
         self.push_screen(SavePlaylistScreen(), _on_save)
 
-    def action_show_playlist(self):
-        self.query_one("#tabs", TabbedContent).active = "tab-playlist"
-        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
+    def action_toggle_tab(self):
+        tabs = self.query_one("#tabs", TabbedContent)
+        if tabs.active == "tab-playlist":
+            tabs.active = "tab-files"
+            self.call_after_refresh(lambda: self.query_one("#filetree", AudioFileTree).focus())
+        else:
+            tabs.active = "tab-playlist"
+            self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
 
     def action_show_files(self):
-        self.query_one("#tabs", TabbedContent).active = "tab-files"
+        tabs = self.query_one("#tabs", TabbedContent)
+        tabs.active = "tab-files"
         self.call_after_refresh(lambda: self.query_one("#filetree", AudioFileTree).focus())
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
@@ -720,16 +728,18 @@ class PlayerApp(App):
         lv = self.query_one("#playlist", ListView)
 
         if ext in PLAYLIST_EXTS:
-            # Load all tracks from the M3U into the playlist
+            # Replace playlist with tracks from the M3U
             tracks = parse_m3u(str(path))
             if not tracks:
                 self.notify("재생목록이 비어 있거나 읽을 수 없습니다", severity="warning")
                 return
-            for fp, title in tracks:
-                idx = len(self.playlist)
+            self.engine.stop()
+            self.playlist = []
+            lv.clear()
+            self.current = 0
+            for i, (fp, title) in enumerate(tracks):
                 self.playlist.append((fp, title))
-                lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{idx}"))
-            self.current = len(self.playlist) - len(tracks)
+                lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{i}"))
         elif ext in AUDIO_EXTS:
             idx = len(self.playlist)
             self.playlist.append((str(path), None))
@@ -757,6 +767,41 @@ class PlayerApp(App):
             self._play_current()
         elif self.current > 0:
             self.current -= 1
+            self._play_current()
+
+    def action_delete_track(self):
+        if not self.playlist:
+            return
+        lv = self.query_one("#playlist", ListView)
+        # Determine which index to delete: focused item or current
+        del_idx = self.current
+        if lv.highlighted_child is not None:
+            item_id = lv.highlighted_child.id
+            if item_id and item_id.startswith("track_"):
+                del_idx = int(item_id[6:])
+
+        was_playing_deleted = (del_idx == self.current and self.engine.is_playing)
+        self.playlist.pop(del_idx)
+
+        # Rebuild ListView from updated playlist
+        lv.clear()
+        for i, (fp, title) in enumerate(self.playlist):
+            lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{i}"))
+
+        if not self.playlist:
+            self.engine.stop()
+            self.current = 0
+            return
+
+        # Adjust current index
+        if del_idx < self.current:
+            self.current -= 1
+        elif del_idx == self.current:
+            self.current = min(self.current, len(self.playlist) - 1)
+
+        lv.index = self.current
+
+        if was_playing_deleted:
             self._play_current()
 
     def on_list_view_selected(self, event: ListView.Selected):
