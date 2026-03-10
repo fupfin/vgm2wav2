@@ -613,8 +613,8 @@ def main():
     if binary == "vgm2wav2":
         exe = "vgm2wav2.exe" if IS_WINDOWS else "vgm2wav2"
         if getattr(sys, "frozen", False):
-            # PyInstaller bundle: vgm2wav2 is bundled alongside the exe
-            local = Path(sys.executable).parent / exe
+            # PyInstaller bundle: binaries are in sys._MEIPASS (_internal/)
+            local = Path(sys._MEIPASS) / exe
         else:
             local = Path(__file__).parent / "build" / exe
         if local.exists():
