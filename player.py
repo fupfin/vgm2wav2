@@ -8,6 +8,7 @@ Dependencies:
     pip install textual sounddevice numpy
 """
 
+import ctypes
 import gzip
 import os
 import re
@@ -18,6 +19,29 @@ import sys
 import threading
 from pathlib import Path
 from typing import Optional
+
+IS_WINDOWS = sys.platform == "win32"
+
+
+def _suspend_process(pid: int):
+    if IS_WINDOWS:
+        handle = ctypes.windll.kernel32.OpenProcess(0x0800, False, pid)
+        if handle:
+            ctypes.windll.ntdll.NtSuspendProcess(handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        os.kill(pid, signal.SIGSTOP)
+
+
+def _resume_process(pid: int):
+    if IS_WINDOWS:
+        handle = ctypes.windll.kernel32.OpenProcess(0x0800, False, pid)
+        if handle:
+            ctypes.windll.ntdll.NtResumeProcess(handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        os.kill(pid, signal.SIGCONT)
+
 
 import numpy as np
 import sounddevice as sd
@@ -271,12 +295,12 @@ class AudioEngine:
     def pause(self):
         if self._proc and not self._paused:
             self._paused = True
-            self._proc.send_signal(signal.SIGSTOP)
+            _suspend_process(self._proc.pid)
 
     def resume(self):
         if self._proc and self._paused:
             self._paused = False
-            self._proc.send_signal(signal.SIGCONT)
+            _resume_process(self._proc.pid)
 
     def toggle_pause(self):
         if self._paused:
@@ -294,7 +318,7 @@ class AudioEngine:
             self._stream = None
         if self._proc:
             try:
-                self._proc.send_signal(signal.SIGCONT)  # unfreeze if paused
+                _resume_process(self._proc.pid)  # unfreeze if paused
             except Exception:
                 pass
             self._proc.kill()
@@ -587,7 +611,8 @@ def main():
     # resolve binary path
     binary = args.bin
     if binary == "vgm2wav2":
-        local = Path(__file__).parent / "build" / "vgm2wav2"
+        exe = "vgm2wav2.exe" if IS_WINDOWS else "vgm2wav2"
+        local = Path(__file__).parent / "build" / exe
         if local.exists():
             binary = str(local)
 

@@ -33,6 +33,10 @@
 #define strncasecmp _strnicmp
 #define snprintf    _snprintf
 #endif
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -200,7 +204,12 @@ static FILE *open_output(const char *out_path) {
             + " -ch_layout stereo -i -";
         return open_pipe_write(cmd);
     }
-    if(stdout_mode) return stdout;
+    if(stdout_mode) {
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        return stdout;
+    }
     if(output_format != "wav") {
         std::string cmd = std::string("ffmpeg -y")
             + " -f "  + ffmpeg_pcm_fmt()
@@ -222,7 +231,12 @@ static FILE *open_output_s16le(const char *out_path) {
             + " -ch_layout stereo -i -";
         return open_pipe_write(cmd);
     }
-    if(stdout_mode) return stdout;
+    if(stdout_mode) {
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        return stdout;
+    }
     if(output_format != "wav") {
         std::string cmd = std::string("ffmpeg -y")
             + " -f s16le"

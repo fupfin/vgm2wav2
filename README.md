@@ -72,13 +72,21 @@ cmake --build build
 
 ### 의존성 설치
 
+macOS / Linux:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+Windows:
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+```
+
 ### 실행
 
+macOS / Linux:
 ```bash
 # 단일 파일
 .venv/bin/python player.py bgm.vgm
@@ -88,6 +96,18 @@ python3 -m venv .venv
 
 # 여러 파일
 .venv/bin/python player.py *.spc
+```
+
+Windows:
+```powershell
+# 단일 파일
+.venv\Scripts\python player.py bgm.vgm
+
+# M3U 재생목록
+.venv\Scripts\python player.py playlist.m3u
+
+# 여러 파일
+.venv\Scripts\python player.py (Get-Item *.spc)
 ```
 
 ### 키 조작
@@ -105,6 +125,7 @@ python3 -m venv .venv
 
 PATH에 등록된 커맨드로 간편하게 실행하려면 래퍼 스크립트를 설치합니다.
 
+macOS / Linux:
 ```bash
 # 프로젝트 경로를 실제 경로로 수정
 cat > ~/.local/bin/vgm-play <<'EOF'
@@ -112,6 +133,11 @@ cat > ~/.local/bin/vgm-play <<'EOF'
 exec /path/to/vgm2wav2/.venv/bin/python /path/to/vgm2wav2/player.py "$@"
 EOF
 chmod +x ~/.local/bin/vgm-play
+```
+
+Windows (PowerShell 프로파일에 추가):
+```powershell
+function vgm-play { & C:\path\to\vgm2wav2\.venv\Scripts\python C:\path\to\vgm2wav2\player.py @args }
 ```
 
 설치 후:
