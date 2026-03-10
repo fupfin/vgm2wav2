@@ -48,10 +48,17 @@ import sounddevice as sd
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.binding import Binding
-from textual.reactive import reactive
-from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
+from textual.widgets import (
+    DirectoryTree, Footer, Header, Label, ListItem, ListView,
+    Static, TabbedContent, TabPane,
+)
 
 # ── Constants ─────────────────────────────────────────────────────────────
+
+AUDIO_EXTS = {
+    '.vgm', '.vgz', '.s98', '.dro', '.gym',
+    '.nsf', '.nsfe', '.spc', '.gbs', '.ay', '.hes', '.kss', '.sap',
+}
 
 SAMPLE_RATE  = 44100
 CHANNELS     = 2
@@ -432,6 +439,15 @@ class SpectrumPanel(Static):
         self.update(lines)
 
 
+# ── File browser ──────────────────────────────────────────────────────────
+
+class AudioFileTree(DirectoryTree):
+    """DirectoryTree that shows only directories and supported audio files."""
+
+    def filter_paths(self, paths):
+        return [p for p in paths if p.is_dir() or p.suffix.lower() in AUDIO_EXTS]
+
+
 # ── Help modal ────────────────────────────────────────────────────────────
 
 HELP_TEXT = """\
@@ -447,6 +463,7 @@ HELP_TEXT = """\
   [yellow]Enter[/yellow]      선택한 곡 재생
 
 [bold]기타[/bold]
+  [yellow]F[/yellow]          파일 탐색기 / 재생목록 전환
   [yellow]H[/yellow]          이 도움말 표시 / 닫기
   [yellow]Q[/yellow]          종료
 
@@ -478,7 +495,10 @@ class HelpScreen(ModalScreen):
 class PlayerApp(App):
     CSS = """
     Screen { layout: vertical; }
-    #playlist { border: solid $primary; }
+    TabbedContent { height: 1fr; }
+    TabPane { height: 1fr; padding: 0; }
+    #playlist { border: solid $primary; height: 1fr; }
+    #filetree { border: solid $primary; height: 1fr; }
     ListView > ListItem.--highlight { background: $accent 30%; }
     """
 
@@ -486,6 +506,7 @@ class PlayerApp(App):
         Binding("space",     "toggle_pause", "Play/Pause"),
         Binding("n",         "next_track",   "Next"),
         Binding("p",         "prev_track",   "Prev"),
+        Binding("f",         "show_files",   "Files"),
         Binding("h",         "help",         "Help"),
         Binding("q",         "quit",         "Quit"),
     ]
@@ -506,11 +527,15 @@ class PlayerApp(App):
         yield Header(show_clock=True)
         yield MetadataPanel(id="meta")
         yield SpectrumPanel(id="spectrum")
-        yield ListView(
-            *[ListItem(Label(title or Path(fp).name), id=f"track_{i}")
-              for i, (fp, title) in enumerate(self.playlist)],
-            id="playlist",
-        )
+        with TabbedContent(id="tabs"):
+            with TabPane("재생목록", id="tab-playlist"):
+                yield ListView(
+                    *[ListItem(Label(title or Path(fp).name), id=f"track_{i}")
+                      for i, (fp, title) in enumerate(self.playlist)],
+                    id="playlist",
+                )
+            with TabPane("파일", id="tab-files"):
+                yield AudioFileTree(str(Path.cwd()), id="filetree")
         yield Footer()
 
     def on_mount(self):
@@ -552,6 +577,26 @@ class PlayerApp(App):
 
     def action_help(self):
         self.push_screen(HelpScreen())
+
+    def action_show_files(self):
+        tabs = self.query_one("#tabs", TabbedContent)
+        if tabs.active == "tab-files":
+            tabs.active = "tab-playlist"
+        else:
+            tabs.active = "tab-files"
+
+    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        path = event.path
+        if path.suffix.lower() not in AUDIO_EXTS:
+            return
+        title = path.stem
+        self.playlist.append((str(path), None))
+        idx = len(self.playlist) - 1
+        lv = self.query_one("#playlist", ListView)
+        lv.append(ListItem(Label(title), id=f"track_{idx}"))
+        self.current = idx
+        self._play_current()
+        self.query_one("#tabs", TabbedContent).active = "tab-playlist"
 
     def action_toggle_pause(self):
         self.engine.toggle_pause()
