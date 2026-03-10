@@ -579,6 +579,15 @@ class HelpScreen(ModalScreen):
         yield Static(HELP_TEXT)
 
 
+_track_seq = 0  # monotonically increasing; never reuse IDs across clear/rebuild
+
+
+def _new_track_id() -> str:
+    global _track_seq
+    _track_seq += 1
+    return f"t{_track_seq}"
+
+
 # ── Main app ──────────────────────────────────────────────────────────────
 
 class PlayerApp(App):
@@ -623,8 +632,8 @@ class PlayerApp(App):
         with TabbedContent(id="tabs"):
             with TabPane("재생목록", id="tab-playlist"):
                 yield ListView(
-                    *[ListItem(Label(title or Path(fp).name), id=f"track_{i}")
-                      for i, (fp, title) in enumerate(self.playlist)],
+                    *[ListItem(Label(title or Path(fp).name), id=_new_track_id())
+                      for (fp, title) in self.playlist],
                     id="playlist",
                 )
             with TabPane("파일", id="tab-files"):
@@ -734,22 +743,20 @@ class PlayerApp(App):
                 self.notify("재생목록이 비어 있거나 읽을 수 없습니다", severity="warning")
                 return
             self.engine.stop()
-            self.playlist = []
-            lv.clear()
+            self.playlist = list(tracks)
             self.current = 0
-            for i, (fp, title) in enumerate(tracks):
-                self.playlist.append((fp, title))
-                lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{i}"))
+            self._rebuild_list(lv)
         elif ext in AUDIO_EXTS:
-            idx = len(self.playlist)
+            self.current = len(self.playlist)
             self.playlist.append((str(path), None))
-            lv.append(ListItem(Label(path.stem), id=f"track_{idx}"))
-            self.current = idx
+            lv.append(ListItem(Label(path.stem), id=_new_track_id()))
         else:
             return
 
         self._play_current()
-        self.action_show_playlist()
+        tabs = self.query_one("#tabs", TabbedContent)
+        tabs.active = "tab-playlist"
+        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
 
     def action_toggle_pause(self):
         self.engine.toggle_pause()
@@ -769,31 +776,28 @@ class PlayerApp(App):
             self.current -= 1
             self._play_current()
 
+    def _rebuild_list(self, lv: "ListView") -> None:
+        """Clear and repopulate ListView using fresh unique IDs."""
+        lv.clear()
+        for fp, title in self.playlist:
+            lv.append(ListItem(Label(title or Path(fp).stem), id=_new_track_id()))
+
     def action_delete_track(self):
         if not self.playlist:
             return
         lv = self.query_one("#playlist", ListView)
-        # Determine which index to delete: focused item or current
-        del_idx = self.current
-        if lv.highlighted_child is not None:
-            item_id = lv.highlighted_child.id
-            if item_id and item_id.startswith("track_"):
-                del_idx = int(item_id[6:])
+        del_idx = lv.index if lv.index is not None else self.current
 
         was_playing_deleted = (del_idx == self.current and self.engine.is_playing)
         self.playlist.pop(del_idx)
 
-        # Rebuild ListView from updated playlist
-        lv.clear()
-        for i, (fp, title) in enumerate(self.playlist):
-            lv.append(ListItem(Label(title or Path(fp).stem), id=f"track_{i}"))
+        self._rebuild_list(lv)
 
         if not self.playlist:
             self.engine.stop()
             self.current = 0
             return
 
-        # Adjust current index
         if del_idx < self.current:
             self.current -= 1
         elif del_idx == self.current:
@@ -805,10 +809,8 @@ class PlayerApp(App):
             self._play_current()
 
     def on_list_view_selected(self, event: ListView.Selected):
-        # Use item id ("track_N") for reliable index resolution
-        item_id = event.item.id
-        if item_id and item_id.startswith("track_"):
-            self.current = int(item_id[6:])
+        if event.list_view.index is not None:
+            self.current = event.list_view.index
             self._play_current()
 
     def on_unmount(self):
