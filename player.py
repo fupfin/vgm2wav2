@@ -48,8 +48,9 @@ import sounddevice as sd
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.widgets import (
-    DirectoryTree, Footer, Header, Label, ListItem, ListView,
+    DirectoryTree, Footer, Header, Input, Label, ListItem, ListView,
     Static, TabbedContent, TabPane,
 )
 
@@ -184,6 +185,15 @@ def parse_m3u(path: str) -> list[tuple[str, Optional[str]]]:
     except Exception:
         pass
     return entries
+
+
+def write_m3u(path: str, playlist: list[tuple[str, Optional[str]]]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("#EXTM3U\n")
+        for fp, title in playlist:
+            display = title or Path(fp).stem
+            f.write(f"#EXTINF:-1,{display}\n")
+            f.write(f"{fp}\n")
 
 
 # ── Audio Engine ──────────────────────────────────────────────────────────
@@ -448,6 +458,35 @@ class AudioFileTree(DirectoryTree):
         return [p for p in paths if p.is_dir() or p.suffix.lower() in AUDIO_EXTS]
 
 
+# ── Save playlist modal ───────────────────────────────────────────────────
+
+class SavePlaylistScreen(ModalScreen):
+    DEFAULT_CSS = """
+    SavePlaylistScreen { align: center middle; }
+    SavePlaylistScreen > Vertical {
+        width: 60;
+        height: auto;
+        padding: 2 3;
+        border: double $accent;
+        background: $surface;
+    }
+    SavePlaylistScreen Label { margin-bottom: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("재생목록을 M3U 파일로 저장\n파일명 입력 후 Enter, 취소는 Esc")
+            yield Input(value="playlist.m3u", id="filename")
+
+    def on_mount(self):
+        self.query_one("#filename", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+
 # ── Help modal ────────────────────────────────────────────────────────────
 
 HELP_TEXT = """\
@@ -465,6 +504,7 @@ HELP_TEXT = """\
 [bold]탭 전환[/bold]
   [yellow]L[/yellow]          재생목록
   [yellow]F[/yellow]          파일 탐색기 (방향키로 탐색, Enter로 재생)
+  [yellow]S[/yellow]          재생목록을 M3U 파일로 저장
 
 [bold]기타[/bold]
   [yellow]H[/yellow]          이 도움말 표시 / 닫기
@@ -511,6 +551,7 @@ class PlayerApp(App):
         Binding("p",         "prev_track",     "Prev"),
         Binding("l",         "show_playlist",  "재생목록"),
         Binding("f",         "show_files",     "파일탐색기"),
+        Binding("s",         "save_playlist",  "저장"),
         Binding("h",         "help",           "Help"),
         Binding("q",         "quit",           "Quit"),
     ]
@@ -583,6 +624,25 @@ class PlayerApp(App):
 
     def action_help(self):
         self.push_screen(HelpScreen())
+
+    def action_save_playlist(self):
+        if not self.playlist:
+            self.notify("재생목록이 비어 있습니다", severity="warning")
+            return
+
+        def _on_save(filename: str | None) -> None:
+            if not filename:
+                return
+            path = Path(filename)
+            if not path.suffix:
+                path = path.with_suffix(".m3u")
+            try:
+                write_m3u(str(path), self.playlist)
+                self.notify(f"저장됨: {path}")
+            except Exception as e:
+                self.notify(f"저장 실패: {e}", severity="error")
+
+        self.push_screen(SavePlaylistScreen(), _on_save)
 
     def action_show_playlist(self):
         self.query_one("#tabs", TabbedContent).active = "tab-playlist"
