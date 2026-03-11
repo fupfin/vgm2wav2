@@ -51,7 +51,7 @@ from textual.app import App, ComposeResult
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Checkbox, DirectoryTree, Footer, Header, Input, Label, ListItem, ListView,
     Select, Static, TabbedContent, TabPane,
@@ -508,10 +508,19 @@ class AudioFileTree(DirectoryTree):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.selected_paths: set[Path] = set()
+        self.show_vgm:   bool = True
+        self.show_audio: bool = True
+        self.show_m3u:   bool = True
 
     def filter_paths(self, paths):
-        return [p for p in paths
-                if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | STD_AUDIO_EXTS | PLAYLIST_EXTS]
+        allowed: set[str] = set()
+        if self.show_vgm:
+            allowed |= AUDIO_EXTS
+        if self.show_audio:
+            allowed |= STD_AUDIO_EXTS
+        if self.show_m3u:
+            allowed |= PLAYLIST_EXTS
+        return [p for p in paths if p.is_dir() or p.suffix.lower() in allowed]
 
     # File-type colours shown in the browser
     _EXT_COLOR = {
@@ -748,6 +757,8 @@ class PlayerApp(App):
     TabPane { height: 1fr; padding: 0; }
     #playlist { border: solid $primary; height: 1fr; }
     #filetree { border: solid $primary; height: 1fr; }
+    #filter-bar { height: 3; padding: 0 1; background: $surface; }
+    #filter-bar Checkbox { margin-right: 2; }
     #selection-status { height: 1; padding: 0 1; background: $surface; }
     ListView > ListItem.--highlight { background: $accent 30%; }
     """
@@ -791,6 +802,10 @@ class PlayerApp(App):
                     id="playlist",
                 )
             with TabPane("파일", id="tab-files"):
+                with Horizontal(id="filter-bar"):
+                    yield Checkbox(RichText("VGM",   style="bright_cyan"),    value=True, id="filter-vgm")
+                    yield Checkbox(RichText("Audio", style="bright_yellow"),  value=True, id="filter-audio")
+                    yield Checkbox(RichText("M3U",   style="bright_magenta"), value=True, id="filter-m3u")
                 yield AudioFileTree(str(Path.cwd()), id="filetree")
                 yield Label("", id="selection-status")
         yield Footer()
@@ -1063,6 +1078,19 @@ class PlayerApp(App):
             threading.Thread(target=_run, daemon=True).start()
 
         self.push_screen(ConvertScreen(len(selected), default_out), _on_convert)
+
+    async def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        id_map = {
+            "filter-vgm":   "show_vgm",
+            "filter-audio": "show_audio",
+            "filter-m3u":   "show_m3u",
+        }
+        attr = id_map.get(event.checkbox.id)
+        if attr is None:
+            return
+        tree = self.query_one("#filetree", AudioFileTree)
+        setattr(tree, attr, event.value)
+        await tree.reload()
 
     def on_list_view_selected(self, event: ListView.Selected):
         if event.list_view.index is not None:
