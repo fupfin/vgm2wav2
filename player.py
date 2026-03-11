@@ -46,13 +46,15 @@ def _resume_process(pid: int):
 
 import numpy as np
 import sounddevice as sd
+from rich.text import Text as RichText
 from textual.app import App, ComposeResult
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import (
     DirectoryTree, Footer, Header, Input, Label, ListItem, ListView,
-    Static, TabbedContent, TabPane,
+    Select, Static, TabbedContent, TabPane,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -484,9 +486,27 @@ class SpectrumPanel(Static):
 class AudioFileTree(DirectoryTree):
     """DirectoryTree that shows only directories and supported audio files."""
 
+    class SelectionChanged(Message):
+        def __init__(self, tree: "AudioFileTree", count: int) -> None:
+            self.tree = tree
+            self.count = count
+            super().__init__()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.selected_paths: set[Path] = set()
+
     def filter_paths(self, paths):
         return [p for p in paths
                 if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | PLAYLIST_EXTS]
+
+    def render_label(self, node, base_style, style):
+        label = super().render_label(node, base_style, style)
+        if node.data and hasattr(node.data, "path") and node.data.path in self.selected_paths:
+            prefix = RichText("✓ ", style="bold green")
+            prefix.append_text(label)
+            return prefix
+        return label
 
     def on_key(self, event) -> None:
         if event.key == "backspace":
@@ -494,6 +514,24 @@ class AudioFileTree(DirectoryTree):
             if parent != self.path:   # stop at filesystem root
                 self.path = parent
             event.stop()             # don't collapse node
+        elif event.key == "space":
+            node = self.cursor_node
+            if node and node.data and hasattr(node.data, "path"):
+                path = node.data.path
+                if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
+                    if path in self.selected_paths:
+                        self.selected_paths.discard(path)
+                    else:
+                        self.selected_paths.add(path)
+                    self.refresh()
+                    self.post_message(self.SelectionChanged(self, len(self.selected_paths)))
+            event.stop()
+        elif event.key == "escape":
+            if self.selected_paths:
+                self.selected_paths.clear()
+                self.refresh()
+                self.post_message(self.SelectionChanged(self, 0))
+                event.stop()
 
 
 # ── Goto directory modal ──────────────────────────────────────────────────
@@ -560,13 +598,60 @@ class SavePlaylistScreen(ModalScreen):
         self.dismiss(event.value.strip())
 
 
+# ── Convert modal ─────────────────────────────────────────────────────────
+
+CONVERT_FORMATS = ["mp3", "wav", "aac", "flac", "ogg", "opus"]
+
+
+class ConvertScreen(ModalScreen):
+    DEFAULT_CSS = """
+    ConvertScreen { align: center middle; }
+    ConvertScreen > Vertical {
+        width: 70;
+        height: auto;
+        padding: 2 3;
+        border: double $accent;
+        background: $surface;
+    }
+    ConvertScreen Label { margin-bottom: 1; margin-top: 1; }
+    ConvertScreen Select { margin-bottom: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", show=False)]
+
+    def __init__(self, count: int, default_dir: str):
+        super().__init__()
+        self._count = count
+        self._default = default_dir
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"{self._count}개 파일 변환  —  Tab으로 이동, Enter로 확인, Esc 취소")
+            yield Label("출력 형식:")
+            yield Select(
+                options=[(f.upper(), f) for f in CONVERT_FORMATS],
+                value="mp3",
+                id="fmt",
+            )
+            yield Label("출력 디렉토리:")
+            yield Input(value=self._default, id="outdir")
+
+    def on_mount(self):
+        self.query_one("#fmt", Select).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        fmt_widget = self.query_one("#fmt", Select)
+        fmt = fmt_widget.value if fmt_widget.value != Select.BLANK else "mp3"
+        self.dismiss((event.value.strip(), fmt))
+
+
 # ── Help modal ────────────────────────────────────────────────────────────
 
 HELP_TEXT = """\
 [bold cyan]VGM TUI Player — 키보드 단축키[/bold cyan]
 
 [bold]재생 제어[/bold]
-  [yellow]Space[/yellow]      재생 / 일시정지
+  [yellow]Space[/yellow]      재생 / 일시정지  (탐색기에서는 파일 선택/해제)
   [yellow]N[/yellow]          다음 곡
   [yellow]P[/yellow]          이전 곡 (3초 이내: 현재 곡 처음부터)
 
@@ -575,13 +660,17 @@ HELP_TEXT = """\
   [yellow]Enter[/yellow]      선택한 곡 재생
   [yellow]Delete[/yellow]     선택한 곡 삭제
 
-[bold]탭 전환[/bold]
-  [yellow]L / F[/yellow]      재생목록 ↔ 파일 탐색기 토글
-  [yellow]Backspace[/yellow]  탐색기에서 상위 폴더
+[bold]파일 탐색기[/bold]
+  [yellow]Space[/yellow]      파일 다중 선택 / 해제  (✓ 표시)
+  [yellow]Esc[/yellow]        선택 전체 해제
+  [yellow]A[/yellow]          선택된 파일을 재생목록에 추가
+  [yellow]C[/yellow]          선택된 파일 일괄 변환 (WAV)
+  [yellow]Backspace[/yellow]  상위 폴더로 이동
   [yellow]G[/yellow]          경로 직접 입력으로 이동
-  [yellow]S[/yellow]          재생목록을 M3U 파일로 저장
 
 [bold]기타[/bold]
+  [yellow]L / F[/yellow]      재생목록 ↔ 파일 탐색기 토글
+  [yellow]S[/yellow]          재생목록을 M3U 파일로 저장
   [yellow]H[/yellow]          이 도움말 표시 / 닫기
   [yellow]Q[/yellow]          종료
 
@@ -626,6 +715,7 @@ class PlayerApp(App):
     TabPane { height: 1fr; padding: 0; }
     #playlist { border: solid $primary; height: 1fr; }
     #filetree { border: solid $primary; height: 1fr; }
+    #selection-status { height: 1; padding: 0 1; background: $surface; }
     ListView > ListItem.--highlight { background: $accent 30%; }
     """
 
@@ -637,6 +727,8 @@ class PlayerApp(App):
         Binding("f",         "toggle_tab",     "목록/탐색기", show=False),
         Binding("g",         "goto_dir",       "경로이동"),
         Binding("s",         "save_playlist",  "저장"),
+        Binding("a",         "add_selected",   "선택추가"),
+        Binding("c",         "convert_selected", "변환"),
         Binding("delete",    "delete_track",   "삭제"),
         Binding("h",         "help",           "Help"),
         Binding("q",         "quit",           "Quit"),
@@ -667,6 +759,7 @@ class PlayerApp(App):
                 )
             with TabPane("파일", id="tab-files"):
                 yield AudioFileTree(str(Path.cwd()), id="filetree")
+                yield Label("", id="selection-status")
         yield Footer()
 
     def on_mount(self):
@@ -836,6 +929,90 @@ class PlayerApp(App):
 
         if was_playing_deleted:
             self._play_current()
+
+    def on_audio_file_tree_selection_changed(self, event: AudioFileTree.SelectionChanged):
+        label = self.query_one("#selection-status", Label)
+        count = event.count
+        if count > 0:
+            label.update(
+                f"[bold green]{count}개 선택됨[/bold green]"
+                "  —  [yellow]A[/yellow]: 재생목록 추가  [yellow]C[/yellow]: WAV 변환"
+                "  [yellow]Esc[/yellow]: 선택 해제"
+            )
+        else:
+            label.update("")
+
+    def action_add_selected(self):
+        tree = self.query_one("#filetree", AudioFileTree)
+        selected = sorted(tree.selected_paths)
+        if not selected:
+            self.notify("선택된 파일이 없습니다", severity="warning")
+            return
+        lv = self.query_one("#playlist", ListView)
+        for path in selected:
+            self.playlist.append((str(path), None))
+            lv.append(ListItem(Label(path.stem), id=_new_track_id()))
+        count = len(selected)
+        tree.selected_paths.clear()
+        tree.refresh()
+        self.query_one("#selection-status", Label).update("")
+        self.notify(f"{count}개 파일을 재생목록에 추가했습니다")
+        tabs = self.query_one("#tabs", TabbedContent)
+        tabs.active = "tab-playlist"
+        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
+
+    def action_convert_selected(self):
+        tree = self.query_one("#filetree", AudioFileTree)
+        selected = sorted(tree.selected_paths)
+        if not selected:
+            self.notify("선택된 파일이 없습니다", severity="warning")
+            return
+        default_out = str(Path.cwd() / "output")
+
+        def _on_convert(result: tuple[str, str] | None) -> None:
+            if not result:
+                return
+            out_dir, fmt = result
+            if not out_dir:
+                return
+            out_path = Path(out_dir)
+            try:
+                out_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.notify(f"출력 디렉토리 생성 실패: {e}", severity="error")
+                return
+
+            binary = self.binary
+            loops = self.loops
+            fade = self.fade
+            total = len(selected)
+
+            def _run():
+                failed = 0
+                for i, fp in enumerate(selected, 1):
+                    dest = out_path / (fp.stem + f".{fmt}")
+                    self.call_from_thread(
+                        self.notify, f"변환 중 ({i}/{total}): {fp.name}"
+                    )
+                    cmd = [binary, f"--loops={loops}", f"--fade={fade}",
+                           "--format", fmt, str(fp), str(dest)]
+                    result = subprocess.run(cmd, capture_output=True)
+                    if result.returncode != 0:
+                        failed += 1
+                        self.call_from_thread(
+                            self.notify, f"변환 실패: {fp.name}", severity="error"
+                        )
+                msg = f"변환 완료 ({fmt.upper()}): {total - failed}/{total}개 → {out_path}"
+                self.call_from_thread(self.notify, msg)
+                tree.selected_paths.clear()
+                self.call_from_thread(tree.refresh)
+                self.call_from_thread(
+                    lambda: self.query_one("#selection-status", Label).update("")
+                )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        self.push_screen(ConvertScreen(len(selected), default_out), _on_convert)
 
     def on_list_view_selected(self, event: ListView.Selected):
         if event.list_view.index is not None:
