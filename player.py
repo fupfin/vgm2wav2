@@ -513,12 +513,24 @@ class AudioFileTree(DirectoryTree):
         return [p for p in paths
                 if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | STD_AUDIO_EXTS | PLAYLIST_EXTS]
 
+    # File-type colours shown in the browser
+    _EXT_COLOR = {
+        **{ext: "bright_cyan"   for ext in AUDIO_EXTS},      # game music
+        **{ext: "bright_yellow" for ext in STD_AUDIO_EXTS},  # standard audio
+        **{ext: "bright_magenta" for ext in PLAYLIST_EXTS},  # playlists
+    }
+
     def render_label(self, node, base_style, style):
         label = super().render_label(node, base_style, style)
-        if node.data and hasattr(node.data, "path") and node.data.path in self.selected_paths:
-            prefix = RichText("✓ ", style="bold green")
-            prefix.append_text(label)
-            return prefix
+        if node.data and hasattr(node.data, "path"):
+            path = node.data.path
+            color = self._EXT_COLOR.get(path.suffix.lower())
+            if color:
+                label.stylize(color)
+            if path in self.selected_paths:
+                prefix = RichText("✓ ", style="bold green")
+                prefix.append_text(label)
+                return prefix
         return label
 
     def on_key(self, event) -> None:
