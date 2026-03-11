@@ -181,27 +181,38 @@ Windows:
 - **변환 후 재생목록에 추가** 옵션으로 변환된 파일을 바로 재생 가능
 - 게임 음악 포맷(VGM/SPC 등)만 변환 가능; 일반 오디오 파일은 자동 스킵
 
-### 독립 실행 파일 빌드 (PyInstaller)
+### 포터블 바이너리 다운로드 (권장)
 
-`vgm2wav2` 바이너리와 Python 환경을 하나의 디렉토리로 패키징합니다.
+[GitHub Releases](https://github.com/honux77/vgm2wav2/releases) 에서 운영체제에 맞는 zip 파일을 다운로드하세요.
+Python이나 CMake 설치 없이 바로 실행할 수 있습니다.
+
+| 파일 | 대상 |
+|------|------|
+| `vgm-player-macos-arm64.zip` | Apple Silicon Mac (M1/M2/M3) |
+| `vgm-player-macos-x86_64.zip` | Intel Mac |
+| `vgm-player-windows-x64.zip` | Windows 64-bit |
+
+압축 해제 후 `vgm-player` 폴더 안의 실행 파일을 실행합니다.
+
+> **ffmpeg 필요** — MP3/AAC/FLAC 변환 및 일반 오디오 재생에 필요합니다.
+> - macOS: `brew install ffmpeg`
+> - Windows: [ffmpeg.org](https://ffmpeg.org/download.html) 다운로드 후 PATH 등록
+
+> **macOS 첫 실행 시** Gatekeeper 경고가 나오면:
+> 시스템 설정 → 개인 정보 보호 및 보안 → "확인 없이 열기" 클릭
+
+### 직접 빌드 (개발자용, PyInstaller)
+
+소스에서 패키징하려면:
 
 ```bash
-# PyInstaller 설치 (최초 1회)
-.venv/bin/pip install pyinstaller       # Linux/macOS
-.venv\Scripts\pip install pyinstaller   # Windows
-
-# vgm2wav2를 먼저 빌드한 후 실행
-.venv/bin/pyinstaller player.spec       # Linux/macOS
-.venv\Scripts\pyinstaller player.spec   # Windows
-```
-
-빌드 결과물: `dist/vgm-player/` 디렉토리
-- `dist/vgm-player/vgm-player` (또는 `.exe`) — 플레이어 실행 파일
-- `dist/vgm-player/vgm2wav2` (또는 `.exe`) — 자동 번들됨
-
-```bash
-dist/vgm-player/vgm-player bgm.vgm
-dist\vgm-player\vgm-player.exe bgm.vgm   # Windows
+# vgm2wav2 C++ 바이너리를 먼저 빌드한 후
+pip install pyinstaller
+pyinstaller --onedir --name vgm-player \
+  --collect-all textual \
+  --add-binary "build/vgm2wav2:." \
+  player.py
+# 결과물: dist/vgm-player/
 ```
 
 ### vgm-play 래퍼 스크립트 설치

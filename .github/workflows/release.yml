@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '릴리스 태그 (예: v1.0.0) — 먼저 git tag를 생성하세요'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 릴리스 생성 (설명문 포함) ─────────────────────────────────────────
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## 설치 방법
+
+            1. 아래에서 운영체제에 맞는 zip 파일을 다운로드합니다.
+               - `vgm-player-macos-arm64.zip` — Apple Silicon (M1/M2/M3)
+               - `vgm-player-macos-x86_64.zip` — Intel Mac
+               - `vgm-player-windows-x64.zip` — Windows 64-bit
+            2. 압축을 해제합니다.
+            3. `vgm-player` 폴더 안의 실행 파일을 실행합니다.
+               - macOS: `./vgm-player`
+               - Windows: `vgm-player.exe` 더블클릭 또는 터미널에서 실행
+
+            > **ffmpeg 필요** — MP3/AAC/FLAC 변환 및 일반 오디오 재생에 필요합니다.
+            > - macOS: `brew install ffmpeg`
+            > - Windows: [ffmpeg.org](https://ffmpeg.org/download.html) 에서 다운로드 후 PATH에 추가
+
+            > **macOS 첫 실행 시** Gatekeeper 경고가 나오면:
+            > 시스템 설정 → 개인 정보 보호 및 보안 → "확인 없이 열기" 클릭
+
+  # ── macOS 빌드 (arm64 / x86_64) ──────────────────────────────────────
+  build-macos:
+    needs: create-release
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon
+            arch: arm64
+          - runner: macos-13   # Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: brew install libzip game-music-emu
+
+      - name: Build vgm2wav2
+        run: |
+          cmake -B build -S .
+          cmake --build build -j$(sysctl -n hw.logicalcpu)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package with PyInstaller
+        run: |
+          pip install -r requirements.txt pyinstaller
+          pyinstaller --onedir --name vgm-player \
+            --collect-all textual \
+            --add-binary "build/vgm2wav2:." \
+            player.py
+
+      - name: Create archive
+        run: cd dist && zip -r ../vgm-player-macos-${{ matrix.arch }}.zip vgm-player/
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          files: vgm-player-macos-${{ matrix.arch }}.zip
+
+  # ── Windows 빌드 (x64) ────────────────────────────────────────────────
+  build-windows:
+    needs: create-release
+    name: Windows (x64)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-libzip
+            mingw-w64-x86_64-game-music-emu
+
+      - name: Build vgm2wav2
+        shell: msys2 {0}
+        run: |
+          cmake -B build -S . -G Ninja
+          cmake --build build
+
+      - name: Collect MinGW runtime DLLs
+        shell: msys2 {0}
+        run: |
+          mkdir -p bundle
+          cp build/vgm2wav2.exe bundle/
+          ldd build/vgm2wav2.exe \
+            | grep -i 'mingw64' \
+            | awk '{print $3}' \
+            | xargs -I{} cp {} bundle/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package with PyInstaller
+        run: |
+          pip install -r requirements.txt pyinstaller
+          pyinstaller --onedir --name vgm-player `
+            --collect-all textual `
+            --add-binary "bundle\vgm2wav2.exe;." `
+            player.py
+          Copy-Item bundle\*.dll dist\vgm-player\
+
+      - name: Create archive
+        run: |
+          cd dist
+          Compress-Archive -Path vgm-player -DestinationPath ..\vgm-player-windows-x64.zip
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          files: vgm-player-windows-x64.zip
