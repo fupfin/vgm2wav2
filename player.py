@@ -11,6 +11,7 @@ Dependencies:
 import ctypes
 import gzip
 import os
+import queue as _queue
 import re
 import signal
 import struct
@@ -64,9 +65,9 @@ PLAYLIST_EXTS = {'.m3u'}
 
 SAMPLE_RATE  = 44100
 CHANNELS     = 2
-CHUNK_FRAMES = 2048
+CHUNK_FRAMES = 4096         # was 2048 — larger block = fewer callbacks, less underrun risk
 VIS_BINS     = 60           # spectrum bars
-MAX_BUF_FRAMES = SAMPLE_RATE * 3  # 3-second backpressure limit
+_QUEUE_MAX   = 80           # ~80 * 4096/44100 ≈ 7.4 s of buffer headroom
 
 VIS_CHARS = " ▁▂▃▄▅▆▇█"
 
@@ -204,8 +205,11 @@ class AudioEngine:
         self._bin = binary
         self._proc: Optional[subprocess.Popen] = None
         self._stream: Optional[sd.OutputStream] = None
-        self._buf = np.zeros(0, dtype=np.int16)
-        self._buf_lock = threading.Lock()
+        # Queue of int16 numpy chunks — avoids large array concat under a lock.
+        # queue.Queue operations are O(1) pointer ops, minimising GIL hold time
+        # in the audio callback and reader thread.
+        self._chunk_q: _queue.Queue = _queue.Queue(maxsize=_QUEUE_MAX)
+        self._leftover = np.zeros(0, dtype=np.int16)
         self._running = False
         self._paused = False
         self._elapsed = 0.0
@@ -213,6 +217,8 @@ class AudioEngine:
         self.vis_data = np.zeros(VIS_BINS)
         self._vis_lock = threading.Lock()
         self._on_finish: Optional[callable] = None
+        # Pre-computed Hanning window — avoids per-callback allocation
+        self._hanning = np.hanning(CHUNK_FRAMES)
 
     def play(self, filepath: str, loops: int = 2, fade: float = 8.0,
              on_finish=None):
@@ -222,7 +228,13 @@ class AudioEngine:
         self._elapsed = 0.0
         self._duration = 0.0
         self._on_finish = on_finish
-        self._buf = np.zeros(0, dtype=np.int16)
+        self._leftover = np.zeros(0, dtype=np.int16)
+        # drain any leftover chunks from a previous play
+        while not self._chunk_q.empty():
+            try:
+                self._chunk_q.get_nowait()
+            except _queue.Empty:
+                break
 
         cmd = [self._bin, "--stdout", "--bps", "16",
                f"--loops={loops}", f"--fade={fade}", filepath]
@@ -258,41 +270,54 @@ class AudioEngine:
     def _reader(self):
         chunk_bytes = CHUNK_FRAMES * CHANNELS * 2
         while self._running:
-            # backpressure: don't get too far ahead of playback
-            with self._buf_lock:
-                buf_frames = len(self._buf) // CHANNELS
-            if buf_frames > MAX_BUF_FRAMES:
-                threading.Event().wait(0.05)
-                continue
             data = self._proc.stdout.read(chunk_bytes)
             if not data:
                 break
-            samples = np.frombuffer(data, dtype=np.int16)
-            with self._buf_lock:
-                self._buf = np.concatenate([self._buf, samples])
+            # .copy() so the bytes object can be freed and we own the buffer
+            samples = np.frombuffer(data, dtype=np.int16).copy()
+            # queue.put blocks when full, giving natural backpressure
+            # without any numpy allocation under a lock
+            while self._running:
+                try:
+                    self._chunk_q.put(samples, timeout=0.05)
+                    break
+                except _queue.Full:
+                    continue
         self._running = False
         if self._on_finish:
             self._on_finish()
 
     def _audio_cb(self, outdata, frames, time_info, status):
         need = frames * CHANNELS
-        with self._buf_lock:
-            avail = len(self._buf)
-            if avail >= need:
-                chunk = self._buf[:need].copy()
-                self._buf = self._buf[need:]
-            else:
-                chunk = np.zeros(need, dtype=np.int16)
-                chunk[:avail] = self._buf
-                self._buf = np.zeros(0, dtype=np.int16)
+
+        # Fill from leftover + queue chunks.
+        # queue.get_nowait() is a fast O(1) deque pop — no large array allocation
+        # under a shared lock, so the GIL is held only briefly.
+        buf = self._leftover
+        while len(buf) < need:
+            try:
+                chunk = self._chunk_q.get_nowait()
+                buf = np.concatenate([buf, chunk]) if len(buf) else chunk
+            except _queue.Empty:
+                break
+
+        if len(buf) >= need:
+            outdata[:] = buf[:need].reshape(frames, CHANNELS)
+            self._leftover = buf[need:]
+        else:
+            # underrun — output silence for missing samples
+            flat = np.zeros(need, dtype=np.int16)
+            flat[:len(buf)] = buf
+            outdata[:] = flat.reshape(frames, CHANNELS)
+            self._leftover = np.zeros(0, dtype=np.int16)
 
         if not self._paused:
             self._elapsed += frames / SAMPLE_RATE
 
-        # Spectrum via FFT on left channel
-        mono = chunk[::2].astype(np.float32) / 32768.0
-        if len(mono) >= CHUNK_FRAMES:
-            windowed = mono[:CHUNK_FRAMES] * np.hanning(CHUNK_FRAMES)
+        # Spectrum via FFT on left channel (pre-computed Hanning avoids alloc)
+        mono = outdata[:, 0].astype(np.float32) / 32768.0
+        if frames >= CHUNK_FRAMES:
+            windowed = mono[:CHUNK_FRAMES] * self._hanning
             fft = np.abs(np.fft.rfft(windowed))
             n = len(fft)
             # Log-scale bin mapping (start at ~200 Hz to skip always-on sub-bass)
@@ -307,8 +332,6 @@ class AudioEngine:
             bins = np.power(bins, 1.5)  # power curve: quiet bins fall toward zero
             with self._vis_lock:
                 self.vis_data = bins
-
-        outdata[:] = chunk.reshape(frames, CHANNELS)
 
     def pause(self):
         if self._proc and not self._paused:
@@ -342,6 +365,12 @@ class AudioEngine:
             self._proc.kill()
             self._proc.wait()
             self._proc = None
+        while not self._chunk_q.empty():
+            try:
+                self._chunk_q.get_nowait()
+            except _queue.Empty:
+                break
+        self._leftover = np.zeros(0, dtype=np.int16)
         with self._vis_lock:
             self.vis_data = np.zeros(VIS_BINS)
         self._elapsed = 0.0
