@@ -1009,12 +1009,21 @@ class PlayerApp(App):
             binary = self.binary
             loops = self.loops
             fade = self.fade
-            total = len(selected)
+            convertible = [fp for fp in selected if fp.suffix.lower() in AUDIO_EXTS]
+            skipped = len(selected) - len(convertible)
+            if skipped:
+                self.notify(
+                    f"{skipped}개 파일은 지원하지 않는 형식으로 건너뜁니다",
+                    severity="warning",
+                )
+            if not convertible:
+                return
+            total = len(convertible)
 
             def _run():
                 failed = 0
                 converted: list[Path] = []
-                for i, fp in enumerate(selected, 1):
+                for i, fp in enumerate(convertible, 1):
                     dest = out_path / (fp.stem + f".{fmt}")
                     self.call_from_thread(
                         self.notify, f"변환 중 ({i}/{total}): {fp.name}"
