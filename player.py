@@ -531,7 +531,7 @@ class AudioFileTree(DirectoryTree):
             node = self.cursor_node
             if node and node.data and hasattr(node.data, "path"):
                 path = node.data.path
-                if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
+                if path.is_file() and path.suffix.lower() in AUDIO_EXTS | STD_AUDIO_EXTS:
                     if path in self.selected_paths:
                         self.selected_paths.discard(path)
                     else:
@@ -889,7 +889,7 @@ class PlayerApp(App):
             self.playlist = list(tracks)
             self.current = 0
             self._rebuild_list(lv)
-        elif ext in AUDIO_EXTS:
+        elif ext in AUDIO_EXTS | STD_AUDIO_EXTS:
             self.current = len(self.playlist)
             self.playlist.append((str(path), None))
             lv.append(ListItem(Label(path.stem), id=_new_track_id()))
