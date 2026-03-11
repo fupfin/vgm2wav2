@@ -606,6 +606,17 @@ class SavePlaylistScreen(ModalScreen):
 CONVERT_FORMATS = ["mp3", "wav", "aac", "flac", "ogg", "opus"]
 
 
+class _ConfirmSelect(Select):
+    """Select that passes Enter to the parent screen when the overlay is closed."""
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # While the dropdown is closed, disable the show_overlay binding so
+        # Enter bubbles up to ConvertScreen.on_key for form submission.
+        if action == "show_overlay" and not self.expanded:
+            return False
+        return True
+
+
 class ConvertScreen(ModalScreen):
     DEFAULT_CSS = """
     ConvertScreen { align: center middle; }
@@ -617,7 +628,7 @@ class ConvertScreen(ModalScreen):
         background: $surface;
     }
     ConvertScreen Label { margin-bottom: 1; margin-top: 1; }
-    ConvertScreen Select { margin-bottom: 1; }
+    ConvertScreen _ConfirmSelect { margin-bottom: 1; }
     """
 
     BINDINGS = [Binding("escape", "dismiss", show=False)]
@@ -629,9 +640,9 @@ class ConvertScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(f"{self._count}개 파일 변환  —  Tab으로 이동, Enter로 확인, Esc 취소")
+            yield Label(f"{self._count}개 파일 변환  —  Enter로 확인, Esc 취소")
             yield Label("출력 형식:")
-            yield Select(
+            yield _ConfirmSelect(
                 options=[(f.upper(), f) for f in CONVERT_FORMATS],
                 value="mp3",
                 id="fmt",
@@ -640,12 +651,21 @@ class ConvertScreen(ModalScreen):
             yield Input(value=self._default, id="outdir")
 
     def on_mount(self):
-        self.query_one("#fmt", Select).focus()
+        self.query_one("#fmt", _ConfirmSelect).focus()
+
+    def _confirm(self) -> None:
+        fmt_widget = self.query_one("#fmt", _ConfirmSelect)
+        fmt = fmt_widget.value if fmt_widget.value != Select.BLANK else "mp3"
+        out_dir = self.query_one("#outdir", Input).value.strip()
+        self.dismiss((out_dir, fmt))
+
+    def on_key(self, event) -> None:
+        if event.key == "enter":
+            self._confirm()
+            event.stop()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        fmt_widget = self.query_one("#fmt", Select)
-        fmt = fmt_widget.value if fmt_widget.value != Select.BLANK else "mp3"
-        self.dismiss((event.value.strip(), fmt))
+        event.stop()  # handled by on_key above; prevent double dismiss
 
 
 # ── Help modal ────────────────────────────────────────────────────────────
