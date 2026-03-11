@@ -53,7 +53,7 @@ from textual.screen import ModalScreen
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import (
-    DirectoryTree, Footer, Header, Input, Label, ListItem, ListView,
+    Checkbox, DirectoryTree, Footer, Header, Input, Label, ListItem, ListView,
     Select, Static, TabbedContent, TabPane,
 )
 
@@ -63,6 +63,7 @@ AUDIO_EXTS = {
     '.vgm', '.vgz', '.s98', '.dro', '.gym',
     '.nsf', '.nsfe', '.spc', '.gbs', '.ay', '.hes', '.kss', '.sap',
 }
+STD_AUDIO_EXTS = {'.wav', '.mp3', '.flac', '.aac', '.ogg', '.opus', '.m4a'}
 PLAYLIST_EXTS = {'.m3u'}
 
 SAMPLE_RATE  = 44100
@@ -238,8 +239,13 @@ class AudioEngine:
             except _queue.Empty:
                 break
 
-        cmd = [self._bin, "--stdout", "--bps", "16",
-               f"--loops={loops}", f"--fade={fade}", filepath]
+        ext = Path(filepath).suffix.lower()
+        if ext in STD_AUDIO_EXTS:
+            cmd = ['ffmpeg', '-hide_banner', '-i', filepath,
+                   '-f', 's16le', '-ac', '2', '-ar', str(SAMPLE_RATE), '-']
+        else:
+            cmd = [self._bin, "--stdout", "--bps", "16",
+                   f"--loops={loops}", f"--fade={fade}", filepath]
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -247,13 +253,20 @@ class AudioEngine:
             bufsize=0,
         )
 
-        # Parse duration from first stderr line:  "filename  [12.3s]"
+        # Parse duration from stderr:
+        #   vgm2wav2 → "filename  [12.3s]"
+        #   ffmpeg   → "  Duration: 00:03:45.23, ..."
         def _stderr_reader():
             for raw in self._proc.stderr:
                 line = raw.decode("utf-8", errors="replace")
                 m = re.search(r'\[(\d+\.?\d*)s\]', line)
                 if m:
                     self._duration = float(m.group(1))
+                    break
+                m = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.?\d*)', line)
+                if m:
+                    h, mn, sc = int(m.group(1)), int(m.group(2)), float(m.group(3))
+                    self._duration = h * 3600 + mn * 60 + sc
                     break
             self._proc.stderr.read()  # drain rest
 
@@ -498,7 +511,7 @@ class AudioFileTree(DirectoryTree):
 
     def filter_paths(self, paths):
         return [p for p in paths
-                if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | PLAYLIST_EXTS]
+                if p.is_dir() or p.suffix.lower() in AUDIO_EXTS | STD_AUDIO_EXTS | PLAYLIST_EXTS]
 
     def render_label(self, node, base_style, style):
         label = super().render_label(node, base_style, style)
@@ -618,6 +631,7 @@ class ConvertScreen(ModalScreen):
     }
     ConvertScreen Label { margin-bottom: 1; margin-top: 1; }
     ConvertScreen Select { margin-bottom: 1; }
+    ConvertScreen Checkbox { margin-top: 1; }
     """
 
     BINDINGS = [Binding("escape", "dismiss", show=False)]
@@ -638,6 +652,7 @@ class ConvertScreen(ModalScreen):
             )
             yield Label("출력 디렉토리:")
             yield Input(value=self._default, id="outdir")
+            yield Checkbox("변환 후 재생목록에 추가", value=True, id="add-playlist")
 
     def on_mount(self):
         inp = self.query_one("#outdir", Input)
@@ -647,7 +662,8 @@ class ConvertScreen(ModalScreen):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         fmt_widget = self.query_one("#fmt", Select)
         fmt = fmt_widget.value if fmt_widget.value != Select.BLANK else "mp3"
-        self.dismiss((event.value.strip(), fmt))
+        add = self.query_one("#add-playlist", Checkbox).value
+        self.dismiss((event.value.strip(), fmt, add))
 
 
 # ── Help modal ────────────────────────────────────────────────────────────
@@ -947,24 +963,27 @@ class PlayerApp(App):
         else:
             label.update("")
 
+    def _add_files_to_playlist(self, paths: list[Path]) -> None:
+        lv = self.query_one("#playlist", ListView)
+        for path in paths:
+            self.playlist.append((str(path), None))
+            lv.append(ListItem(Label(path.stem), id=_new_track_id()))
+        tabs = self.query_one("#tabs", TabbedContent)
+        tabs.active = "tab-playlist"
+        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
+
     def action_add_selected(self):
         tree = self.query_one("#filetree", AudioFileTree)
         selected = sorted(tree.selected_paths)
         if not selected:
             self.notify("선택된 파일이 없습니다", severity="warning")
             return
-        lv = self.query_one("#playlist", ListView)
-        for path in selected:
-            self.playlist.append((str(path), None))
-            lv.append(ListItem(Label(path.stem), id=_new_track_id()))
         count = len(selected)
         tree.selected_paths.clear()
         tree.refresh()
         self.query_one("#selection-status", Label).update("")
+        self._add_files_to_playlist(selected)
         self.notify(f"{count}개 파일을 재생목록에 추가했습니다")
-        tabs = self.query_one("#tabs", TabbedContent)
-        tabs.active = "tab-playlist"
-        self.call_after_refresh(lambda: self.query_one("#playlist", ListView).focus())
 
     def action_convert_selected(self):
         tree = self.query_one("#filetree", AudioFileTree)
@@ -974,10 +993,10 @@ class PlayerApp(App):
             return
         default_out = str(Path.cwd() / "output")
 
-        def _on_convert(result: tuple[str, str] | None) -> None:
+        def _on_convert(result: tuple[str, str, bool] | None) -> None:
             if not result:
                 return
-            out_dir, fmt = result
+            out_dir, fmt, add_to_playlist = result
             if not out_dir:
                 return
             out_path = Path(out_dir)
@@ -994,6 +1013,7 @@ class PlayerApp(App):
 
             def _run():
                 failed = 0
+                converted: list[Path] = []
                 for i, fp in enumerate(selected, 1):
                     dest = out_path / (fp.stem + f".{fmt}")
                     self.call_from_thread(
@@ -1001,12 +1021,14 @@ class PlayerApp(App):
                     )
                     cmd = [binary, f"--loops={loops}", f"--fade={fade}",
                            "--format", fmt, str(fp), str(dest)]
-                    result = subprocess.run(cmd, capture_output=True)
-                    if result.returncode != 0:
+                    proc = subprocess.run(cmd, capture_output=True)
+                    if proc.returncode != 0:
                         failed += 1
                         self.call_from_thread(
                             self.notify, f"변환 실패: {fp.name}", severity="error"
                         )
+                    else:
+                        converted.append(dest)
                 msg = f"변환 완료 ({fmt.upper()}): {total - failed}/{total}개 → {out_path}"
                 self.call_from_thread(self.notify, msg)
                 tree.selected_paths.clear()
@@ -1014,6 +1036,8 @@ class PlayerApp(App):
                 self.call_from_thread(
                     lambda: self.query_one("#selection-status", Label).update("")
                 )
+                if add_to_playlist and converted:
+                    self.call_from_thread(self._add_files_to_playlist, converted)
 
             threading.Thread(target=_run, daemon=True).start()
 
