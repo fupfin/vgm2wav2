@@ -523,8 +523,11 @@ class AudioFileTree(DirectoryTree):
                         self.selected_paths.discard(path)
                     else:
                         self.selected_paths.add(path)
+                    # Immediately repaint just this node, then the whole widget
+                    node.refresh()
                     self.refresh()
                     self.post_message(self.SelectionChanged(self, len(self.selected_paths)))
+                    self.action_cursor_down()
             event.stop()
         elif event.key == "escape":
             if self.selected_paths:
