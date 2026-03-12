@@ -155,12 +155,22 @@ static std::string format_extension() {
 }
 
 static std::string shell_quote(const std::string &s) {
+#ifdef _WIN32
+    // cmd.exe uses double-quote quoting; escape embedded double quotes
+    std::string r = "\"";
+    for(char c : s) {
+        if(c == '"') r += "\\\"";
+        else r += c;
+    }
+    return r + "\"";
+#else
     std::string r = "'";
     for(char c : s) {
         if(c == '\'') r += "'\\''";
         else r += c;
     }
     return r + "'";
+#endif
 }
 
 static const char *ffmpeg_pcm_fmt() {
@@ -170,13 +180,21 @@ static const char *ffmpeg_pcm_fmt() {
 }
 
 static bool check_ffmpeg() {
+#ifdef _WIN32
+    FILE *p = popen("ffmpeg -version >NUL 2>&1", "r");
+#else
     FILE *p = popen("ffmpeg -version > /dev/null 2>&1", "r");
+#endif
     if(!p) return false;
     return pclose(p) == 0;
 }
 
 static bool check_ffplay() {
+#ifdef _WIN32
+    FILE *p = popen("ffplay -version >NUL 2>&1", "r");
+#else
     FILE *p = popen("ffplay -version > /dev/null 2>&1", "r");
+#endif
     if(!p) return false;
     return pclose(p) == 0;
 }
@@ -211,13 +229,18 @@ static FILE *open_output(const char *out_path) {
         return stdout;
     }
     if(output_format != "wav") {
+#ifdef _WIN32
+        const char *null_dev = "2>NUL";
+#else
+        const char *null_dev = "2>/dev/null";
+#endif
         std::string cmd = std::string("ffmpeg -y")
             + " -f "  + ffmpeg_pcm_fmt()
             + " -ar " + std::to_string(sample_rate)
             + " -ac 2"
             + " -i pipe:0"
             + " " + shell_quote(out_path)
-            + " 2>/dev/null";
+            + " " + null_dev;
         return open_pipe_write(cmd);
     }
     return fopen(out_path, "wb");
@@ -238,13 +261,18 @@ static FILE *open_output_s16le(const char *out_path) {
         return stdout;
     }
     if(output_format != "wav") {
+#ifdef _WIN32
+        const char *null_dev = "2>NUL";
+#else
+        const char *null_dev = "2>/dev/null";
+#endif
         std::string cmd = std::string("ffmpeg -y")
             + " -f s16le"
             + " -ar " + std::to_string(sample_rate)
             + " -ac 2"
             + " -i pipe:0"
             + " " + shell_quote(out_path)
-            + " 2>/dev/null";
+            + " " + null_dev;
         return open_pipe_write(cmd);
     }
     return fopen(out_path, "wb");
