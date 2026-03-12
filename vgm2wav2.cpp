@@ -706,12 +706,12 @@ int main(int argc, const char *argv[]) {
     if(sample_rate == 0) sample_rate = 44100;
     if(bit_depth != 16 && bit_depth != 24 && bit_depth != 32) bit_depth = 16;
 
-    if(argc < 1 || (!play_mode && !stdout_mode && argc < 2)) {
+    if(argc < 1) {
         fprintf(stderr,
             "Usage: %s [options] <input> [output]\n"
             "  input   : audio file, directory, or .zip archive\n"
             "  output  : audio file (single input) or directory (folder/zip input)\n"
-            "            (not required when using --play)\n"
+            "            (omit to use current directory with input filename)\n"
             "\n"
             "Supported formats:\n"
             "  libvgm  : VGM, VGZ, S98, DRO, GYM\n"
@@ -752,13 +752,19 @@ int main(int argc, const char *argv[]) {
     std::string out = (argc >= 2) ? argv[1] : "";
 
     if(fs::is_directory(in)) {
+        if(out.empty() && !play_mode && !stdout_mode)
+            out = fs::current_path().string();
         return process_directory(in.string(), out);
     } else {
         std::string ext = in.extension().string();
         for(auto &c : ext) c = (char)tolower((unsigned char)c);
         if(ext == ".zip") {
+            if(out.empty() && !play_mode && !stdout_mode)
+                out = (fs::current_path() / in.stem()).string();
             return process_zip(in.string(), out);
         } else {
+            if(out.empty() && !play_mode && !stdout_mode)
+                out = (fs::current_path() / in.stem()).string() + format_extension();
             return process_file(in.string(), out);
         }
     }
